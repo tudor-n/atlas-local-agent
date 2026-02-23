@@ -1,5 +1,4 @@
 import time
-import os
 import sys
 from colorama import Fore, Style, init
 
@@ -7,11 +6,13 @@ init(autoreset=True)
 
 try:
     from core.brain.llm import LLMEngine
+    from core.brain.sleep import SleepSystem
     from core.senses.voice import Mouth
     from core.senses.hearing import Ear
 except ImportError as e:
     print(f"{Fore.RED}Error importing modules: {e}{Style.RESET_ALL}")
     sys.exit(1)
+
 
 def main():
     print(Fore.CYAN + "="*50)
@@ -23,6 +24,7 @@ def main():
     try:
         print(Fore.YELLOW + " [SYSTEM] Initializing Brain (Llama 3.1)...")
         brain = LLMEngine()
+        sleep_system = SleepSystem()
         
         print(Fore.YELLOW + " [SYSTEM] Initializing Senses (Whisper CPU)...")
         ear = Ear(device="cuda") 
@@ -84,24 +86,18 @@ def main():
             time.sleep(1)
             continue
 
-    print(Fore.CYAN + "\n" + "="*50)
-    print(Fore.CYAN + "[SLEEP] ATLAS entering sleep cycle...")
-    print(Fore.CYAN + "\n" + "="*50)
-
-    mouth.speak("Initializing sleep cycle, Sir. Archiving our session.", blend_config=VOICE_BLEND)
-
-    conversation = brain.get_conversation_history()
-    session_start = brain.get_session_start()
-
-    if len(conversation) >= 4:
-        brain.archivist.archive_session(conversation, session_start)
-    else:
-        print(Fore.YELLOW + " [SLEEP] Session too short to archive")
-
-    print(Fore.GREEN + "\n" + "="*50)
-    print(Fore.GREEN + " [SLEEP] Sleep cycle complete. Sweet dreams, Sir.")
-    print(Fore.GREEN + "\n" + "="*50)
+    # === SLEEP CYCLE ===
+    print(Fore.YELLOW + "\n [SYSTEM] Initiating sleep cycle...")
+    mouth.speak("Initiating sleep cycle, Sir. Archiving our session.", blend_config=VOICE_BLEND)
+    
+    sleep_system.sleep(
+        conversation=brain.get_conversation_history(),
+        session_start=brain.get_session_start(),
+        consolidate=True
+    )
+    
     print(Fore.YELLOW + " [SYSTEM] Shutting down. Sleep well, sir...")
+
 
 if __name__ == "__main__":
     main()

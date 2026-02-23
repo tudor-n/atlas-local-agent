@@ -14,6 +14,7 @@ class LLMEngine:
         self.chronometer = Chronometer()
         self.archivist = Archivist()
         self.short_term_memory = deque(maxlen=10)
+        self.last_interaction = {"user": "", "atlas": ""}
         
         self.recall_intent_examples = [
             "do you remember",
@@ -29,9 +30,7 @@ class LLMEngine:
             "recall what i said",
             "what did we do",
             "yesterday",
-            "last time",
-            "last session",
-            "previously"
+            "last time"
         ]
         self.recall_intent_vectors = [
             self.memory.embedder.encode(phrase) 
@@ -52,10 +51,6 @@ class LLMEngine:
             "- You may also receive PAST EPISODES — summaries of previous sessions.\n"
             "- ONLY reference information explicitly provided in these contexts.\n"
             "- If no memory context is provided for a query, say 'I don't have anything stored about that, Sir.'\n"
-            "\n\n[TIME INSTRUCTIONS]\n"
-            "- You will be provided with CURRENT TIME AWARENESS data.\n"
-            "- When asked about time, date, or uptime, use ONLY the provided values.\n"
-            "- NEVER guess or estimate time — always use the exact values given.\n"
             "\n\n[CRITICAL RULES]\n"
             "- NEVER invent memories, dates, or details that were not provided.\n"
             "- NEVER claim to remember something unless it appears in [LONG-TERM MEMORY] or [PAST EPISODES].\n"
@@ -172,10 +167,6 @@ Fact:"""
         
         explicit_recall = self._is_recall_intent(user_input)
         
-        input_lower = user_input.lower()
-        time_keywords = ["what time", "the time", "how long", "uptime", "running for", "date today", "what date", "tell me the time"]
-        is_time_query = any(kw in input_lower for kw in time_keywords)
-        
         search_query = user_input
         if self.short_term_memory:
             recent_context = " ".join(list(self.short_term_memory)[-4:])
@@ -193,11 +184,11 @@ Fact:"""
                     long_term_context = "\n".join(clean_memories)
                     print(Fore.MAGENTA + f" [MEMORY] {len(clean_memories)} memories loaded")
         
-        if explicit_recall and self.archivist.count() > 0:
+        if explicit_recall:
             episodes = self.archivist.recall_episodes(search_query, n=3, threshold=1.0)
             if episodes:
                 episodic_context = "\n".join(episodes)
-                print(Fore.CYAN + f" [EPISODES] {len(episodes)} past sessions loaded")
+                print(Fore.MAGENTA + f" [EPISODES] {len(episodes)} past sessions loaded")
 
         messages = [
             {"role": "system", "content": self.system_prompt}
@@ -227,13 +218,7 @@ Fact:"""
             elif memory.startswith("ATLAS:"):
                 messages.append({"role": "assistant", "content": memory[6:].strip()})
         
-        if is_time_query:
-            current_time = self.chronometer.now().strftime('%I:%M %p')
-            current_uptime = self.chronometer.uptime()
-            user_input_with_time = f"{user_input}\n[EXACT TIME DATA: Time={current_time}, Uptime={current_uptime}]"
-            messages.append({"role": "user", "content": user_input_with_time})
-        else:
-            messages.append({"role": "user", "content": user_input})
+        messages.append({"role": "user", "content": user_input})
 
         full_response_text = ""
 
@@ -260,6 +245,8 @@ Fact:"""
         
         self.short_term_memory.append(f"User: {user_input}")
         self.short_term_memory.append(f"ATLAS: {full_response_text}")
+        
+        self.last_interaction = {"user": user_input, "atlas": full_response_text}
         
         self._extract_facts(user_input)
 
