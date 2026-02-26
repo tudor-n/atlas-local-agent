@@ -57,11 +57,12 @@ def main():
         
         habits = HabitLoop(bus)
         router = Router(bus)
-        brain = LLMEngine()
+        brain = LLMEngine(bus=bus)
         sleep_system = SleepSystem()
         salience = SalienceFilter(bus)
         tom = TheoryOfMind(bus)
         vta = RewardSystem()
+
         
         ear = None
         mouth = None
@@ -106,21 +107,18 @@ def main():
                                 key = msvcrt.getch()
                                 msvcrt.ungetch(key)
                                 stop_event.set()
-                                import random
-                                ack = random.choice(["I'm sorry, Sir. Go ahead.", "You were saying?", "...Yes, Sir?"])
-                                print(f"\r{Fore.RED} [ATLAS] (Interrupted): {ack}")
+                                print(f"\r{Fore.RED} [ATLAS] (Interrupted)          ")
                                 print(Fore.BLUE + " [USER]: ", end="", flush=True)
                                 break
                             
-                            # Voice Mode Interruption (Tripped automatically by VAD hearing speech)
+                            # Voice Mode Interruption 
                             elif mode == 1 and stop_event.is_set():
-                                import random
-                                ack = random.choice(["I'm sorry, Sir. Go ahead.", "You were saying?", "...Yes, Sir?"])
-                                print(f"\r{Fore.RED} [ATLAS] (Interrupted): {ack}")
+                                print(f"\r{Fore.RED} [ATLAS] (Interrupted)          ")
                                 print(Fore.BLUE + " [USER]: ", end="", flush=True)
                                 break
                                 
                             time.sleep(0.05)
+                            
                 finally:
                     # Remove the kill-switch target so the Ear doesn't accidentally trigger later
                     if mode == 1 and ear:
@@ -144,7 +142,7 @@ def main():
 
     # Display correct controls
     if mode == 1:
-        print(Fore.WHITE + "\n [CONTROLS] Speak naturally to interact. Say 'exit' or 'sleep' to shutdown.\n")
+        print(Fore.WHITE + "\n [CONTROLS] Speak natuwhile speakrally to interact. Say 'exit' or 'sleep' to shutdown.\n")
     else:
         print(Fore.WHITE + "\n [CONTROLS] Type your message and press ENTER. Type 'exit' or 'sleep' to shutdown.\n")
 
@@ -153,12 +151,14 @@ def main():
         try:
             # 1. Gather Input
             if mode == 1:
-                user_input = ear.wait_for_input() # VAD + Whisper handles this now!
+                user_input = ear.wait_for_input() 
                 if not user_input: continue
                 
                 # Check for voice exit commands
                 clean_input = user_input.lower().strip().replace(".", "")
                 exit_words = ['exit', 'quit', 'sleep', 'shutdown', 'outflows', 'atlas exit']
+                
+                # If ANY of the exit aliases are found inside the sentence, shut down immediately
                 if any(word in clean_input for word in exit_words): 
                     break
             else:
@@ -178,11 +178,19 @@ def main():
                     continue
 
                 intent = router.route(user_input)
-                salience.score_importance(user_input)
+                print(Fore.YELLOW + f" [ROUTER] Intent mapped to: {intent}")
+                
+                score = salience.score_importance(user_input)
+                print(Fore.LIGHTYELLOW_EX + f" [SALIENCE] Cognitive load score: {score}/10")
+                
                 user_state = tom.analyze_state(user_input)
 
-                if user_state.get('mood') == 'positive': vta.apply_feedback(last_intent, positive=True)
-                elif user_state.get('mood') == 'frustrated': vta.apply_feedback(last_intent, positive=False)
+                if user_state.get('mood') == 'positive': 
+                    vta.apply_feedback(last_intent, positive=True)
+                    print(Fore.CYAN + f" [VTA] (+) Rewarded {last_intent}. New Weight: {vta.get_weight(last_intent):.2f}")
+                elif user_state.get('mood') == 'frustrated': 
+                    vta.apply_feedback(last_intent, positive=False)
+                    print(Fore.CYAN + f" [VTA] (-) Penalized {last_intent}. New Weight: {vta.get_weight(last_intent):.2f}")
                 last_intent = intent
 
                 print(Fore.GREEN + " [ATLAS]: ", end="")
@@ -197,14 +205,11 @@ def main():
                     ear.set_interrupt_target(stop_event)
 
                 for chunk in response_generator:
-                    # Voice Mode Interruption (VAD sets stop_event automatically)
+                    # Voice Mode Interruption 
                     if mode == 1 and stop_event.is_set():
                         interrupted = True
-                        time.sleep(0.1) # Let audio buffer clear
-                        import random
-                        ack = random.choice(["Yes, Sir?", "I'm listening.", "Proceed, Sir."])
-                        print(Fore.RED + f"\n [ATLAS] (Interrupted): {ack}")
-                        if mouth: mouth.speak(ack, blend_config=VOICE_BLEND)
+                        time.sleep(0.1) 
+                        print(Fore.RED + "\n [ATLAS] (Interrupted)")
                         break
                     
                     # Text Mode Interruption
@@ -214,10 +219,7 @@ def main():
                         stop_event.set()
                         interrupted = True
                         time.sleep(0.1)
-                        import random
-                        ack = random.choice(["Yes, Sir?", "I'm listening.", "Proceed, Sir."])
-                        print(Fore.RED + f"\n [ATLAS] (Interrupted): {ack}")
-                        if mouth: mouth.speak(ack, blend_config=VOICE_BLEND)
+                        print(Fore.RED + "\n [ATLAS] (Interrupted)")
                         break
                     
                     if 'message' in chunk:
@@ -256,8 +258,16 @@ def main():
     print(Fore.GREEN + f"\n [ATLAS]: {goodbye}")
     if mouth: mouth.speak(goodbye, blend_config=VOICE_BLEND)
         
-    print(Fore.YELLOW + " [SYS] Archiving session...")
-    sleep_system.sleep(conversation=brain.get_conversation_history(), session_start=brain.get_session_start(), consolidate=True)
+    print(Fore.YELLOW + " [SYS] Archiving session and consolidating memories...")
+    sleep_stats = sleep_system.sleep(conversation=brain.get_conversation_history(), session_start=brain.get_session_start(), consolidate=True)
+    
+    if sleep_stats["consolidation"]:
+        c_stats = sleep_stats["consolidation"]
+        if c_stats["consolidated"] > 0:
+            print(Fore.MAGENTA + f" [CONSOLIDATOR] Merged {c_stats['consolidated']} related facts into denser memories.")
+        else:
+            print(Fore.LIGHTBLACK_EX + f" [CONSOLIDATOR] No related facts needed merging (Total facts: {c_stats['remaining']}).")
+            
     if mouth:
         try: mouth.close()
         except: pass

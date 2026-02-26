@@ -44,6 +44,7 @@ class DefaultModeNetwork:
 
             # Generate thought
             thought = self._generate_proactive_thought()
+            
     def _generate_proactive_thought(self):
         thought_type = random.choice(["memory", "system", "idle"])
         prompt = ""

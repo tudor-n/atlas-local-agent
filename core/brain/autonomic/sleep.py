@@ -13,5 +13,6 @@ class SleepSystem:
             "consolidation": None
         }
         if consolidate:
-            stats["consolidation"] = self.consolidator.consolidate(min_cluster_size=2, threshold=0.6)
+            # Increased threshold to 0.85 so it aggressively groups related facts!
+            stats["consolidation"] = self.consolidator.consolidate(min_cluster_size=2, threshold=0.85)
         return stats

@@ -6,9 +6,11 @@ from core.brain.cognition.memory import MemorySystem
 from core.brain.autonomic.chronometer import Chronometer
 from core.brain.limbic.archivist import Archivist
 from core.brain.autonomic.interoception import Interoception
+from core.brain.sensorimotor.habits import HabitLoop
 
 class LLMEngine:
-    def __init__(self, model_name="llama3.1:latest", system_prompt=None):
+    def __init__(self, bus, model_name="llama3.1:latest", system_prompt=None):
+        self.bus = bus
         self.model_name = model_name
         self.memory = MemorySystem()
         self.chronometer = Chronometer()
@@ -31,6 +33,9 @@ class LLMEngine:
             "[CRITICAL IDENTITY RULES]\n"
             "- You were designed and built SOLELY by Tudor. There are no other engineers, doctors, or teams involved.\n"
             "- You possess advanced LONG-TERM MEMORY and EPISODIC RECALL. Treat any information in the provided context as your own organic, personal memory.\n"
+            "- [ANTI-HALLUCINATION RULE]: If the user asks about past logs, conversations, projects, or hardware specs, and you do not have explicitly provided [PAST EPISODES] or [LONG-TERM MEMORY] context, YOU MUST STATE that your records are empty. NEVER invent, hallucinate, or assume details.\n"
+            "- NEVER invent schedules, agendas, or pending tasks. If none are in your context, you have no agenda.\n"
+            "- If the user reports a hardware failure, DO NOT claim you were already monitoring it or foresaw it. Acknowledge the user's report and respond based ONLY on your [LIVE SYSTEM VITALS].\n"
             "- NEVER say the literal words '[PAST EPISODES]', '[LONG-TERM MEMORY]', or '[LIVE SYSTEM VITALS]' out loud. Integrate the facts naturally.\n"
             "- STAND YOUR GROUND. If a memory or fact is in your context, treat it as absolute truth. NEVER backpedal, NEVER invent fake conversations, and NEVER apologize for a memory if the user questions it.\n"
             "- NEVER say 'I don't have explicit memories' or mention 'design limitations'.\n"
@@ -90,16 +95,46 @@ class LLMEngine:
 
     def _extract_facts(self, user_input):
         input_lower = user_input.lower()
-        for p in ["remember that ", "save that ", "memorize that "]:
+        
+        # 1. NEUROPLASTICITY: Check for Habit Formation Command
+        if "when i say" in input_lower and ("respond with" in input_lower or "say" in input_lower or "reply with" in input_lower):
+            try:
+                prompt = (
+                    "Extract the trigger phrase and the exact response from this command.\n"
+                    "Format EXACTLY as: Trigger|Response\n"
+                    "Example: 'When I say initiate ghost protocol, respond with Ghost protocol engaged.' -> initiate ghost protocol|Ghost protocol engaged.\n"
+                    f"Command: '{user_input}'\nOutput:"
+                )
+                import ollama
+                extraction = ollama.generate(model=self.model_name, prompt=prompt, options={"temperature": 0.0})['response'].strip()
+                if "|" in extraction:
+                    trigger, response = extraction.split("|", 1)
+                    self.bus.publish("learn_new_habit", {"trigger": trigger.strip(), "response": response.strip()})
+                    return 
+            except: pass
+
+        # 2. EXPANDED Explicit Memory Check
+        explicit_triggers = ["remember that ", "save that ", "memorize that ", "record that ", "note that "]
+        for p in explicit_triggers:
             if p in input_lower:
+                # Extract everything after the trigger phrase
                 fact = user_input[input_lower.index(p) + len(p):].strip().rstrip('.')
                 if len(fact) > 5 and self.memory.save_memory(fact):
                     print(Fore.MAGENTA + f" [MEMORY] Explicitly saved: {fact}")
                 return
         
-        if any(k in input_lower for k in ["my ", "i am", "i like", "i prefer", "i'm"]):
+        # 3. SMARTER Implicit Memory Check
+        implicit_triggers = ["my ", "i am", "i like", "i prefer", "i'm", "i plan to", "i will", "i decided", "i am going to"]
+        if any(k in input_lower for k in implicit_triggers):
             try:
-                fact = ollama.generate(model=self.model_name, prompt=f"Extract ONE short factual statement from this sentence about the user. Output EXACTLY the fact and nothing else. If none, output None.\nSentence: \"{user_input}\"\nFact:")['response'].strip(' "\'')
+                import ollama
+                prompt = (
+                    "Extract the core factual statements about the user or their projects from this sentence. "
+                    "If there are multiple facts, combine them into one concise sentence. "
+                    "Output EXACTLY the fact and nothing else. If none, output None.\n"
+                    f"Sentence: \"{user_input}\"\nFact:"
+                )
+                fact = ollama.generate(model=self.model_name, prompt=prompt)['response'].strip(' "\'')
                 if not any(x in fact.lower() for x in ["none", "n/a", "no fact", "cannot extract"]) and 5 < len(fact) < 150:
                     if self.memory.save_memory(fact):
                         print(Fore.MAGENTA + f" [MEMORY] Implicitly extracted: {fact}")
@@ -118,17 +153,26 @@ class LLMEngine:
         episodic_context = ""
         
         if self.memory.collection.count() > 0:
-            retrieved = self.memory.recall(search_query, n_results=5 if explicit_recall else 2, similarity_threshold=0.8 if explicit_recall else 0.4)
+            # Relaxed the implicit threshold from 0.4 to 0.65 so he retrieves related concepts easier!
+            retrieved = self.memory.recall(search_query, n_results=5 if explicit_recall else 3, similarity_threshold=0.8 if explicit_recall else 0.65)
             clean_memories = [m for m in retrieved if m.strip() != user_input.strip()]
             if clean_memories: 
                 long_term_context = "\n".join(clean_memories)
-                print(Fore.MAGENTA + f" [MEMORY] Retrieved {len(clean_memories)} relevant facts.")
+                print(Fore.MAGENTA + f" [MEMORY] Retrieved {len(clean_memories)} facts:")
+                for m in clean_memories: print(Fore.LIGHTMAGENTA_EX + f"    -> {m[:75]}...")
 
-        if explicit_recall:
-            episodes = self.archivist.recall_episodes(search_query, n=3, threshold=1.0)
-            if episodes: 
-                episodic_context = "\n".join(episodes)
-                print(Fore.MAGENTA + f" [ARCHIVIST] Retrieved {len(episodes)} past sessions.")
+        # REMOVED the 'if explicit_recall:' lock! 
+        # He now ALWAYS passively checks his episodes for context, but pulls more if explicitly asked.
+        episodes = self.archivist.recall_episodes(
+            search_query, 
+            n=3 if explicit_recall else 1, 
+            threshold=0.8 if explicit_recall else 0.55
+        )
+        
+        if episodes: 
+            episodic_context = "\n".join(episodes)
+            print(Fore.MAGENTA + f" [ARCHIVIST] Retrieved {len(episodes)} past sessions:")
+            for e in episodes: print(Fore.LIGHTMAGENTA_EX + f"    -> {e[:75]}...")
 
             
         # Fetch live hardware vitals (Inside the think method)

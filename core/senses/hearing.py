@@ -101,31 +101,35 @@ class Ear:
 
     def _transcribe_audio(self, audio_array):
         try:
-            # VOLUME CHECK: If the average amplitude is too low, it's just static. Kill it.
             amplitude = np.abs(audio_array).mean()
-            if amplitude < 0.005: # Adjust this number if he's too deaf
+            if amplitude < 0.005: 
                 return
 
             segments, info = self.whisper_model.transcribe(
                 audio_array, 
                 beam_size=1, 
                 condition_on_previous_text=False,
-                initial_prompt="Atlas, exit, shutdown, robot, engineering." # Prime the model for your voice
+                # Added 'hypothesize' and 'imagine' to bias the model towards your Romanian accent!
+                initial_prompt="Atlas, exit, shutdown, robot, engineering, system, vitals, hypothesize, imagine." 
             )
             text = " ".join([s.text for s in segments]).strip()
             
-            # THE ANTI-REPETITION FILTER
-            # If the same word appears more than 3 times in a row, it's a hallucination.
-            words = text.lower().split()
+            if len(text) < 3: return
+            
+            words = text.lower().replace('.', '').replace(',', '').split()
             if len(words) > 5:
-                for i in range(len(words) - 3):
-                    if words[i] == words[i+1] == words[i+2]:
-                        return # Drop the repetitive hallucination
+                unique_words = len(set(words))
+                diversity_ratio = unique_words / len(words)
+                if diversity_ratio < 0.4: 
+                    # GLASS BRAIN PRINT:
+                    print(Fore.LIGHTBLACK_EX + f" [EAR] Dropped hallucination (repetitive): {text}")
+                    return 
 
-            # JUNK PHRASE FILTER
-            junk_phrases = ["thank you", "okay", "bye", "subscribe", "it's all good", "all good"]
-            if len(text) < 3: return 
-            if any(junk == text.lower().strip('.') for junk in junk_phrases) and len(text) < 15:
+            junk_phrases = ["thank you", "okay", "bye", "subscribe", "it's all good", "all good", "thanks for watching"]
+            lower_text = text.lower()
+            if any(junk in lower_text for junk in junk_phrases) and len(words) < 15:
+                # GLASS BRAIN PRINT:
+                print(Fore.LIGHTBLACK_EX + f" [EAR] Dropped junk phrase: {text}")
                 return 
                 
             self.transcription_queue.put(text)
