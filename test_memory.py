@@ -1,4 +1,4 @@
-from core.brain.memory import MemorySystem
+from core.brain.cognition.memory import MemorySystem
 
 mem = MemorySystem(db_path="./atlas_memory")  # Same path as main.py
 
