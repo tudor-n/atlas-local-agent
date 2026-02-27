@@ -9,7 +9,7 @@ class SalienceFilter:
         prompt = f"Rate the urgency/importance of this input from 1 to 10. Output ONLY the integer.\nInput: {text}\nScore:"
         try:
             score = int(ollama.generate(model=self.model, prompt=prompt)['response'].strip())
-            if score >= 8: self.bus.publish("high_salience_event", text)
+            if score >= 9: self.bus.publish("high_salience_event", text)
             return min(max(score, 1), 10)
         except:
             return 5

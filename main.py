@@ -164,7 +164,11 @@ def main():
             else:
                 user_input = input(Fore.BLUE + "\n [USER]: " + Style.RESET_ALL).strip()
                 if user_input.lower() in ['exit', 'quit', 'sleep', '!exit']: break
-                    
+
+                if msvcrt:
+                    while msvcrt.kbhit():
+                      msvcrt.getch()
+                
             if not user_input or not user_input.strip(): continue
 
             # Acquire lock so DMN doesn't fire while we are actively interacting

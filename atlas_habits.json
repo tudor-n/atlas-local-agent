@@ -1,5 +1,6 @@
 {
     "hello atlas": "Good to see you, Sir.",
     "status report": "All core systems nominal, Sir.",
-    "brace for impact": "Gyros stabilized. Bracing for impact, Sir."
+    "run diagnostics": "Running full system diagnostics now, Sir.",
+    "all systems go": "All systems are go, Sir. Ready for launch."
 }
