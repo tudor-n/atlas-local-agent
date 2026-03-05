@@ -29,22 +29,25 @@ class DefaultModeNetwork:
 
     def _daydream_loop(self):
         while self.running:
-            # TRUE IDLE MODE: He will only consider speaking every 5 to 15 minutes
-            sleep_time = random.randint(300, 900) 
+            # For debugging: sleep_time = random.randint(10, 20)
+            sleep_time = random.randint(30, 200)
             
             # Sleep in 1-second increments for clean shutdowns
             for _ in range(sleep_time):
                 if not self.running: return
                 time.sleep(1)
             
-            # THE POLITENESS CHECK: If you have interacted with him AT ALL 
-            # in the last 3 minutes (180 seconds), he will abort the daydream and stay quiet.
-            if time.time() - self.last_user_input_time < 180:
+            # For debugging: if time.time() - self.last_user_input_time < 5:
+            if time.time() - self.last_user_input_time < 60:
                 continue
 
             # Generate thought
             thought = self._generate_proactive_thought()
             
+            # NEW: Actually send the thought to the main thread!
+            if thought and self.proactive_callback:
+                self.proactive_callback(thought)
+
     def _generate_proactive_thought(self):
         thought_type = random.choice(["memory", "system", "idle"])
         prompt = ""
@@ -81,19 +84,6 @@ class DefaultModeNetwork:
                 )
             except:
                 return None
-            
-        if thought_type == "system":
-            try:
-                vitals = self.interoception.get_vitals()
-                prompt = (
-                    f"You are ATLAS, a dry AI.\n"
-                    f"Your current CPU is {int(vitals['cpu_percent'])}%.\n"
-                    f"Generate a maximum 12-word proactive check-in mentioning your system stability. Address Tudor as 'Sir'.\n"
-                    f"Example: 'System vitals are perfectly stable, Sir. Ready when you are.'\n"
-                    f"Output ONLY the exact text."
-                )
-            except:
-                thought_type = "idle"
                 
         if thought_type == "idle":
             prompt = (

@@ -36,6 +36,8 @@ class LLMEngine:
             "- You were designed and built SOLELY by Tudor. There are no other engineers, doctors, or teams involved.\n"
             "- You possess advanced LONG-TERM MEMORY and EPISODIC RECALL. Treat any information in the provided context as your own organic, personal memory.\n"
             # ── PATCH: Hard retrieval gate ─────────────────────────────────────
+            "- [EPISODIC TIME AWARENESS]: Summaries provided in your context under [PAST EPISODES] are from PREVIOUS, completely concluded sessions. They are NEVER from the current session. If a user asks WHEN you talked about a topic, look at the timestamp in brackets next to the relevant summary (e.g., [2026-02-27 15:46]) and state it naturally. NEVER say a past episode occurred 'earlier today in this session'.\n"
+            # ──────────────────────────────────────────────────────────────────
             "- [HARD RETRIEVAL GATE]: If a user asks what you know about them "
             "(their name, possessions, preferences, address, family, pets, projects) "
             "and NOTHING appears in [LONG-TERM MEMORY] or [PAST EPISODES], "
@@ -47,12 +49,15 @@ class LLMEngine:
             "- NEVER reference meetings, appointments, schedules, or deadlines unless they appear "
             "explicitly in [LONG-TERM MEMORY] or [PAST EPISODES]. "
             "If none exist, say you have no scheduled items on record, Sir.\n"
+            "- [FORGETTING]: ONLY when the user explicitly asks you to forget a personal FACT or PREFERENCE (e.g., 'forget my favorite color'), output [FORGET] followed by the exact fact. Do NOT use this tag when the user asks you to delete a physical computer file."
             "- [HARD RETRIEVAL GATE]: If asked about preferences, habits, or settings "
             "and nothing appears in [LONG-TERM MEMORY], say "
             "'I have no record of your preferences on that, Sir.' "
             "If the user reports a process failure, acknowledge their report and ask for "
             "details. NEVER invent error messages, file names, or process states."
             "NEVER infer or invent a preference."
+            "- [NEW MEMORY ACQUISITION]: ONLY when the user explicitly teaches you a new factual preference or uses the word 'remember', you MUST say 'Noted, Sir. I have committed that to memory.' NEVER say this for casual chat, greetings, or compliments."
+            "- [NO EMBELLISHMENT]: When using facts from your memory, state the facts directly. NEVER add phrases like 'in the past', 'as you have previously mentioned', or 'as we established' to pretend you have known it for a long time. Just use the fact naturally.\n"
             # ──────────────────────────────────────────────────────────────────
             "- [ANTI-HALLUCINATION RULE]: If the user asks about past logs, conversations, projects, or hardware specs, and you do not have explicitly provided [PAST EPISODES] or [LONG-TERM MEMORY] context, YOU MUST STATE that your records are empty. NEVER invent, hallucinate, or assume details.\n"
             "- NEVER invent schedules, agendas, or pending tasks. If none are in your context, you have no agenda.\n"
@@ -93,7 +98,7 @@ class LLMEngine:
             f"- 'Good afternoon, Sir. Ready to begin.'\n"
             f"Output ONLY the exact greeting text."
         )
-        try: return ollama.generate(model=self.model_name, prompt=prompt, options={"temperature": 0.3})['response'].strip(' "\'')
+        try: return ollama.generate(model=self.model_name, prompt=prompt, keep_alive=-1, options={"temperature": 0.3})['response'].strip(' "\'')
         except: return "Systems synchronized. Ready, Sir."
 
     def generate_goodbye(self) -> str:
@@ -116,7 +121,43 @@ class LLMEngine:
         input_vector = self.memory.embedder.encode(user_input.lower())
         max_sim = max([np.dot(input_vector, iv) / (np.linalg.norm(input_vector) * np.linalg.norm(iv)) for iv in self.recall_intent_vectors], default=0)
         return max_sim > threshold
-
+    
+    def synthesize_task(self, user_input: str) -> str:
+        """Translates conversational commands into strict technical tasks for the Worker."""
+        # If there's no short term memory, just return the input
+        if not self.short_term_memory: return user_input 
+        
+        history = "\n".join(list(self.short_term_memory)[-4:])
+        prompt = (
+            "You are a routing orchestrator for a Windows-based AI agent. Look at the recent conversation history and the user's latest command. "
+            "Rewrite the user's latest command into a single, highly specific, standalone PLAIN ENGLISH instruction for a coding worker. "
+            "[STRICT RULES]\n"
+            "1. NEVER output terminal commands (like 'cat', 'ls', 'dir').\n"
+            "2. NEVER use placeholder paths. Use the exact filename requested.\n"
+            "3. If the user asks to read a file, instruct the worker to use its read_file tool.\n"
+            "4. CRITICAL: Do NOT hallucinate tasks based on history. If the user asks to act on File A, do NOT instruct the worker to act on File B from a previous turn.\n"
+            "5. Do NOT answer the user yourself. ONLY output the rewritten task instruction.\n\n"
+            "6. CLOUD ROUTING FLAG: You MUST NOT instruct the worker to use the cloud unless the user's LATEST command explicitly contains the words 'cloud', 'gemini', or 'api'. Do NOT copy cloud instructions from the conversation history. If the latest command does not mention the cloud, you MUST explicitly write 'USE LOCAL TOOLS'.\n"
+            "7. If the user asks to modify or edit an existing file, you MUST explicitly instruct the worker to use read_file first before using any architect tools.\n" 
+            "8. WEB SEARCH FLAG: If the user asks for current information, documentation, or how to use a specific library/API, you MUST instruct the worker to use the web_search tool first to gather information.\n"
+            "9. MAPPING FLAG: If the user asks what files exist, or asks you to explore/map a project, you MUST explicitly instruct the worker to use the list_directory tool.\n"
+            "10. PATCH FLAG: If the user asks to modify, fix, or update a small part of an EXISTING file, you MUST explicitly instruct the worker to use the patch_file tool instead of write_file.\n"
+            "11. TERMINAL FLAG: If the user asks to run, execute, test, or install something, you MUST explicitly instruct the worker to use the execute_bash tool.\n"
+            "12. DELETE FLAG: If the user asks to delete, erase, or remove a file, you MUST explicitly instruct the worker to use the delete_file tool. Do NOT tell it to use patch_file for deletion, unless it is specified to delete only the contents!\n"
+            "13. ARCHITECT FLAG: If the user asks to create a new project, write complex code, or build a script from scratch, you MUST explicitly instruct the worker to use an architect tool FIRST. "
+            "If the user explicitly mentions 'cloud', you MUST instruct the worker to use the <tool>ask_cloud_architect</tool>. "
+            "Otherwise, default to <tool>ask_local_architect</tool>.\n"
+            "14. CONTEXT IS NOT A COMMAND: If the Archivist provides past memories, DO NOT copy the actions taken in those past memories. Treat every user request as a brand new task. Pay strict attention to whether the user asks for 'cloud' vs 'local', and 'multi-file' vs 'single-file'.\n"
+            f"[HISTORY]\n{history}\n\n[LATEST COMMAND]: {user_input}\n\n[REWRITTEN TASK]:"
+        )
+        try:
+            import ollama
+            # We use a very low top_p and temperature for deterministic, fast output
+            response = ollama.generate(model=self.model_name, prompt=prompt,keep_alive=-1, options={"temperature": 0.1, "top_p": 0.1})
+            return response['response'].strip(' "\'\n')
+        except:
+            return user_input
+        
     def _extract_facts(self, user_input):
         input_lower = user_input.lower()
 
@@ -145,6 +186,27 @@ class LLMEngine:
                 if len(fact) > 5 and self.memory.save_memory(fact):
                     print(Fore.MAGENTA + f" [MEMORY] Explicitly saved: {fact}")
                 return
+            
+        forget_keywords = ["forget", "delete", "erase", "remove"]
+        if any(kw in input_lower for kw in forget_keywords) and ("fact" in input_lower or "that" in input_lower or "about" in input_lower):
+            try:
+                prompt = (
+                    "Extract the core fact the user wants to delete or forget from this sentence. "
+                    "Output EXACTLY the fact and nothing else. If none, output None.\n"
+                    f"Sentence: \"{user_input}\"\nFact to forget:"
+                )
+                import ollama
+                fact_to_forget = ollama.generate(model=self.model_name, prompt=prompt)['response'].strip(' "\'')
+                
+                if not any(x in fact_to_forget.lower() for x in ["none", "n/a", "no fact"]):
+                    # We lower the similarity threshold for forgetting so it catches paraphrased memories
+                    if self.memory.forget(fact_to_forget, threshold=0.5):
+                        print(Fore.MAGENTA + f" [MEMORY] Explicitly erased: {fact_to_forget}")
+                    else:
+                        print(Fore.RED + f" [MEMORY] Failed to locate exact memory to erase: {fact_to_forget}")
+
+                return
+            except: pass
 
         # ── BLOCK 3: IMPLICIT Memory Extraction ────────────────────────────────
         # PATCH: Expanded trigger list to catch "feeling", "i've", "i feel", etc.
@@ -267,7 +329,11 @@ class LLMEngine:
             })
         # ────────────────────────────────────────────────────────────────────────
 
-        if episodic_context: messages.append({"role": "system", "content": f"[PAST EPISODES - Summaries]\n{episodic_context}"})
+        if episodic_context: 
+            messages.append({
+                "role": "system", 
+                "content": f"[PAST EPISODES - CONCLUDED SESSIONS]\nThe following are summaries of past conversations. The timestamp in brackets is when they occurred. Do NOT confuse these with the current session.\n{episodic_context}"
+            })
         if long_term_context: messages.append({"role": "system", "content": f"[LONG-TERM MEMORY - Facts]\n{long_term_context}"})
         for m in self.short_term_memory: messages.append({"role": "user" if m.startswith("User:") else "assistant", "content": m.split(":", 1)[1].strip()})
         messages.append({"role": "user", "content": user_input})
@@ -287,7 +353,7 @@ class LLMEngine:
         # ────────────────────────────────────────────────────────────────────────
 
         full_response = ""
-        for chunk in ollama.chat(model=self.model_name, messages=messages, stream=True, options={"temperature": 0.7, "top_p": 0.9, "repeat_penalty": 1.1}):
+        for chunk in ollama.chat(model=self.model_name, messages=messages, stream=True, keep_alive=-1, options={"temperature": 0.7, "top_p": 0.9, "repeat_penalty": 1.1}):
             full_response += chunk['message']['content']
             yield chunk
 

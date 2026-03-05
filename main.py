@@ -2,6 +2,7 @@ import time
 import sys
 import threading
 from colorama import Fore, Style, init
+import random
 
 try:
     import msvcrt
@@ -23,12 +24,15 @@ try:
     from core.brain.self.default_mode import DefaultModeNetwork
     from core.senses.voice import Mouth
     from core.senses.hearing import Ear
+    
+    # --- NEW: WORKER AND MOTOR IMPORTS ---
+    from core.brain.sensorimotor.motor import MotorCortex
+    from core.brain.interface.worker import WorkerNode
 except ImportError as e:
     print(f"{Fore.RED}Error importing modules: {e}{Style.RESET_ALL}")
     sys.exit(1)
 
 # --- GLOBAL LOCK ---
-# This prevents reactive and proactive thoughts from talking over each other
 atlas_busy = threading.Lock()
 
 def select_mode():
@@ -62,18 +66,20 @@ def main():
         salience = SalienceFilter(bus)
         tom = TheoryOfMind(bus)
         vta = RewardSystem()
-
         
+        # --- NEW: INITIALIZE THE HANDS ---
+        motor = MotorCortex()
+        worker = WorkerNode()
+        worker.warmup()
+
         ear = None
         mouth = None
         if mode in [1, 2]: mouth = Mouth(device="cuda")
         
-        # Initialize and START the continuous ear for Mode 1
         if mode == 1: 
             ear = Ear(device="cuda")
             ear.start_listening()
 
-        # --- THE PROACTIVE HANDLER ---
         def handle_proactive(text):
             if atlas_busy.acquire(blocking=False):
                 try:
@@ -82,18 +88,15 @@ def main():
                     elif hasattr(brain, 'messages'):
                         brain.messages.append({"role": "assistant", "content": text})
                     
-                    # Cleanly overwrite the current input line, print the thought, then restore the input prompt
                     print(f"\r{Fore.GREEN} [ATLAS] (Proactive): {text}")
                     print(Fore.BLUE + " [USER]: ", end="", flush=True)
 
                     if mouth:
                         stop_event = threading.Event()
                         
-                        # Hand the kill-switch to the Ear if in Voice Mode!
                         if mode == 1 and ear:
                             ear.set_interrupt_target(stop_event)
                         
-                        # Flush the keyboard buffer BEFORE we start listening for text interruptions
                         if msvcrt:
                             while msvcrt.kbhit():
                                 msvcrt.getch()
@@ -102,7 +105,6 @@ def main():
                         speak_thread.start()
                         
                         while speak_thread.is_alive():
-                            # Text Mode Interruption
                             if mode in [2, 3] and msvcrt and msvcrt.kbhit():
                                 key = msvcrt.getch()
                                 msvcrt.ungetch(key)
@@ -111,7 +113,6 @@ def main():
                                 print(Fore.BLUE + " [USER]: ", end="", flush=True)
                                 break
                             
-                            # Voice Mode Interruption 
                             elif mode == 1 and stop_event.is_set():
                                 print(f"\r{Fore.RED} [ATLAS] (Interrupted)          ")
                                 print(Fore.BLUE + " [USER]: ", end="", flush=True)
@@ -120,7 +121,6 @@ def main():
                             time.sleep(0.05)
                             
                 finally:
-                    # Remove the kill-switch target so the Ear doesn't accidentally trigger later
                     if mode == 1 and ear:
                         ear.set_interrupt_target(None)
                     atlas_busy.release()
@@ -140,25 +140,21 @@ def main():
         print(f"{Fore.RED}Init Error: {e}")
         return
 
-    # Display correct controls
     if mode == 1:
-        print(Fore.WHITE + "\n [CONTROLS] Speak natuwhile speakrally to interact. Say 'exit' or 'sleep' to shutdown.\n")
+        print(Fore.WHITE + "\n [CONTROLS] Speak naturally to interact. Say 'exit' or 'sleep' to shutdown.\n")
     else:
         print(Fore.WHITE + "\n [CONTROLS] Type your message and press ENTER. Type 'exit' or 'sleep' to shutdown.\n")
 
     # --- MAIN EVENT LOOP ---
     while True:
         try:
-            # 1. Gather Input
             if mode == 1:
                 user_input = ear.wait_for_input() 
                 if not user_input: continue
                 
-                # Check for voice exit commands
                 clean_input = user_input.lower().strip().replace(".", "")
                 exit_words = ['exit', 'quit', 'sleep', 'shutdown', 'outflows', 'atlas exit']
                 
-                # If ANY of the exit aliases are found inside the sentence, shut down immediately
                 if any(word in clean_input for word in exit_words): 
                     break
             else:
@@ -171,7 +167,6 @@ def main():
                 
             if not user_input or not user_input.strip(): continue
 
-            # Acquire lock so DMN doesn't fire while we are actively interacting
             with atlas_busy:
                 if mode == 1: print(Fore.BLUE + f" [USER]: {user_input}")
 
@@ -197,26 +192,58 @@ def main():
                     print(Fore.CYAN + f" [VTA] (-) Penalized {last_intent}. New Weight: {vta.get_weight(last_intent):.2f}")
                 last_intent = intent
 
+                # --- NEW: THE WORKER INTERCEPTION ---
+                llm_input = user_input
+                
+                if intent == "COMMAND":
+                    # 1. Audible acknowledgment
+                    import random
+                    acks = [
+                        "Right away, Sir.", 
+                        "At once, Sir.", 
+                        "Processing your request.", 
+                        "Initiating task now, Sir.", 
+                        "Consider it done, Sir.",
+                        "Executing, Sir."
+                    ]
+                    ack = random.choice(acks)
+                    print(Fore.GREEN + f" [ATLAS]: {ack}")
+                    if mouth: mouth.speak(ack, blend_config=VOICE_BLEND)
+                    
+                    # 2. Main Butler translates the conversational command into a hard spec
+                    synthesized_task = brain.synthesize_task(user_input)
+                    print(Fore.MAGENTA + f" [ORCHESTRATOR] Translated task: '{synthesized_task}'")
+                    
+                    # 3. Worker synthesizes the XML AND executes the tool natively
+                    sys_result = worker.execute_task(synthesized_task)
+                    
+                    # 4. Modify the input going to the Butler to include the result
+                    llm_input = (
+                        f"Task requested: '{user_input}'.\n"
+                        f"System Execution Result: {sys_result}\n\n"
+                        "[CRITICAL INSTRUCTION]: If the Execution Result contains an [ERROR], you MUST inform the user about the exact error and do NOT pretend the task succeeded. If it is [SUCCESS], summarize what was done concisely."
+                    )
+                # ------------------------------------
+
                 print(Fore.GREEN + " [ATLAS]: ", end="")
-                response_generator = brain.think(user_input)
+                
+                # Pass the dynamically modified input and explicit intent
+                response_generator = brain.think(llm_input, intent=intent)
                 current_sentence = ""
                 
                 stop_event = threading.Event()
                 interrupted = False
 
-                # Hand the kill-switch to the Ear for reactive responses
                 if mode == 1 and ear:
                     ear.set_interrupt_target(stop_event)
 
                 for chunk in response_generator:
-                    # Voice Mode Interruption 
                     if mode == 1 and stop_event.is_set():
                         interrupted = True
                         time.sleep(0.1) 
                         print(Fore.RED + "\n [ATLAS] (Interrupted)")
                         break
                     
-                    # Text Mode Interruption
                     elif mode in [2, 3] and msvcrt and msvcrt.kbhit():
                         key = msvcrt.getch()
                         msvcrt.ungetch(key)
@@ -241,7 +268,6 @@ def main():
                 if mouth and current_sentence.strip() and not interrupted:
                     mouth.speak(current_sentence.strip(), blend_config=VOICE_BLEND, stop_event=stop_event)
 
-                # Reset Ear target at end of interaction
                 if mode == 1 and ear:
                     ear.set_interrupt_target(None)
 

@@ -27,7 +27,12 @@ class Consolidator:
     
     def summarize_cluster(self, memories: list) -> str:
         if len(memories) == 1: return memories[0]
-        prompt = f"Combine these related facts about the user into ONE concise statement.\nMaximum 50 words, third person.\nFacts:\n{chr(10).join(f'- {m}' for m in memories)}\nCombined statement:"
+        prompt = (
+            "Combine these related facts about the user into ONE concise statement.\n"
+            "Maximum 50 words.\n"
+            "CRITICAL RULE: The user is named Tudor. Always refer to him as 'Tudor', 'the user', or use male pronouns (he/his). NEVER use female pronouns.\n"
+            f"Facts:\n{chr(10).join(f'- {m}' for m in memories)}\nCombined statement:"
+        )
         try:
             return ollama.generate(model=self.model_name, prompt=prompt)['response'].strip()
         except:

@@ -95,6 +95,7 @@ class Ear:
                             is_speaking = False
                             full_audio = np.concatenate(buffer)
                             buffer = []
+                            print(Fore.YELLOW + " [DEBUG] Silence detected. Sending to Whisper...") # <-- ADD THIS
                             threading.Thread(target=self._transcribe_audio, args=(full_audio,), daemon=True).start()
                 except Exception as e:
                     print(Fore.RED + f"[EAR] Audio read error: {e}")
@@ -102,8 +103,9 @@ class Ear:
     def _transcribe_audio(self, audio_array):
         try:
             amplitude = np.abs(audio_array).mean()
+            print(Fore.CYAN + f" [DEBUG] Raw audio amplitude: {amplitude:.5f}")
             if amplitude < 0.005: 
-                return
+                 return
 
             segments, info = self.whisper_model.transcribe(
                 audio_array, 
