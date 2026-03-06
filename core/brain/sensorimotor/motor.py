@@ -2,77 +2,42 @@ import subprocess
 import os
 import re
 from colorama import Fore
+from config import SANDBOX_PATH, BASH_TIMEOUT
 
 class MotorCortex:
-    def __init__(self):
-        # ── THE SANDBOX LOCK ─────────────────────────────────────────────
-        # Change this to wherever you created your dummy folder!
-        self.sandbox_path = "D:\\atlas_sandbox" 
-        
-        # Ensure the sandbox exists
-        if not os.path.exists(self.sandbox_path):
-            os.makedirs(self.sandbox_path)
-            print(Fore.YELLOW + f" [MOTOR] Warning: Sandbox didn't exist. Created at {self.sandbox_path}")
-        # ─────────────────────────────────────────────────────────────────
+    def __init__(self, sandbox_path=SANDBOX_PATH):
+        self.sandbox_path = sandbox_path
+        os.makedirs(self.sandbox_path, exist_ok=True)
 
-    def _sanitize_command(self, raw_output: str) -> str:
-        """Strips markdown formatting like ```bash ... ``` from the LLM output."""
-        clean_cmd = raw_output.strip()
-        
-        # Remove markdown code blocks if present
-        if clean_cmd.startswith("```"):
-            # Find the end of the first line (e.g., ```bash)
-            first_newline = clean_cmd.find('\n')
-            if first_newline != -1:
-                clean_cmd = clean_cmd[first_newline+1:]
-            
-            # Find the closing backticks
-            last_backticks = clean_cmd.rfind("```")
-            if last_backticks != -1:
-                clean_cmd = clean_cmd[:last_backticks]
-                
-        return clean_cmd.strip()
+    def _sanitize_command(self, raw: str) -> str:
+        clean = raw.strip()
+        if clean.startswith("```"):
+            nl = clean.find('\n')
+            if nl != -1:
+                clean = clean[nl + 1:]
+            last = clean.rfind("```")
+            if last != -1:
+                clean = clean[:last]
+        return clean.strip()
 
     def execute_worker_command(self, raw_command: str) -> str:
-        """Executes a command strictly within the sandbox environment."""
-        clean_command = self._sanitize_command(raw_command)
-        
-        if not clean_command:
-            return "[ERROR] Worker generated an empty command."
-
-        print(Fore.CYAN + f" [MOTOR] Executing: {clean_command}")
-
-        # ── SECURITY PROTOCOLS ───────────────────────────────────────────
-        # Prevent obvious directory traversal escapes
-        if "cd .." in clean_command or "cd \\" in clean_command or "cd /" in clean_command:
-            print(Fore.RED + " [MOTOR] Security Intervention: Sandbox escape attempted.")
-            return "[SYSTEM REJECTED] Command attempted to escape the restricted sandbox environment."
-        
-        # Prevent dangerous system commands
-        dangerous_keywords = ["format", "diskpart", "reg", "del /f /s /q C:\\"]
-        if any(dk in clean_command.lower() for dk in dangerous_keywords):
-            print(Fore.RED + " [MOTOR] Security Intervention: Dangerous command blocked.")
-            return "[SYSTEM REJECTED] Command contained prohibited system-level operations."
-        # ─────────────────────────────────────────────────────────────────
-
+        clean = self._sanitize_command(raw_command)
+        if not clean:
+            return "[ERROR] Empty command."
+        if re.search(r'\bcd\s*\.\.', clean) or re.search(r'\bcd\s*[/\\]', clean):
+            return "[REJECTED] Sandbox escape blocked."
+        dangerous = [r'\bdiskpart\b', r'\breg\s+(add|delete)\b', r'\bformat\s+[a-zA-Z]:', r'\bdel\s+/f\s+/s']
+        for pat in dangerous:
+            if re.search(pat, clean.lower()):
+                return "[REJECTED] Dangerous command blocked."
         try:
-            # Execute the command locked inside the sandbox_path
-            result = subprocess.run(
-                clean_command,
-                shell=True,
-                cwd=self.sandbox_path,  # <--- The absolute lock
-                capture_output=True,
-                text=True,
-                timeout=15  # Prevents infinite loops
-            )
-            
+            result = subprocess.run(clean, shell=True, cwd=self.sandbox_path, capture_output=True, text=True, timeout=BASH_TIMEOUT)
             if result.returncode == 0:
-                output = result.stdout.strip()
-                return f"[SUCCESS]\n{output}" if output else "[SUCCESS] Command executed with no output."
-            else:
-                return f"[ERROR]\n{result.stderr.strip()}"
-                
+                out = result.stdout.strip()
+                return f"[SUCCESS]\n{out}" if out else "[SUCCESS] No output."
+            combined = f"{result.stderr.strip()}\n{result.stdout.strip()}".strip()
+            return f"[ERROR]\n{combined}"
         except subprocess.TimeoutExpired:
-            return "[ERROR] Command execution timed out after 15 seconds."
+            return f"[ERROR] Timed out after {BASH_TIMEOUT}s."
         except Exception as e:
-            return f"[CRITICAL ERROR] Motor cortex failure: {str(e)}"
+            return f"[CRITICAL ERROR] {e}"

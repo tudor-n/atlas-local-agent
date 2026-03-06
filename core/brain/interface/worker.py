@@ -1,116 +1,150 @@
+import re
 import ollama
 from colorama import Fore
 from core.brain.interface.tools import ToolRegistry
+from config import WORKER_MODEL, WORKER_MAX_STEPS, OLLAMA_KEEP_ALIVE
 
 class WorkerNode:
-    def __init__(self, model_name="qwen2.5-coder:3b"):
+    def __init__(self, model_name=WORKER_MODEL):
         self.model_name = model_name
-        
-        # Instantiate the new Tool Registry
         self.tools = ToolRegistry()
-        
-        # The ROBUST JSON Prompt
         self.system_prompt = (
-            "You are ATLAS's internal autonomous operator. "
-            "Your ONLY job is to execute the user's task by outputting the correct XML tags.\n\n"
+            "You are ATLAS's internal autonomous operator. Execute tasks by outputting XML tool calls.\n\n"
             f"{self.tools.tool_schema}\n\n"
-            "[STRICT RULES]\n"
-            "1. CRITICAL: If the user asks you to 'write', 'create', or 'save' a file, you MUST use the <tool>write_file</tool> tool BEFORE using <tool>finish</tool>. Never finish a file-creation task without actually saving it to disk!\n"
-            "2. Output ONLY the raw XML tags. No markdown formatting. No explanations.\n"
-            "3. If asked to %text about 'yourself', your identity is ATLAS, a local engineering assistant created by Tudor. NEVER mention Qwen, Alibaba, or being an AI language model.\n"
-            "4. Do NOT use placeholder paths like '/path/to/file'. Use the exact filename requested."
-            "5. When using <tool>finish</tool>, you MUST include the specific data you found or generated (like numbers, names, or file paths) in the <message> tag. Do not just say 'task complete'.\n"
-            "6. DATA TRANSFER: If you use web_search or ask_architect, you MUST copy the exact facts, text, or code they give you and put it inside the <content> tag of your write_file step. Do not use placeholders.\n"
-            "7. ERROR HANDLING: If a tool returns an [ERROR], you MUST NOT use the finish tool. You must read the error, think about why it failed, and use another tool to fix it.\n"
-            "8. COMPREHENSIVE SUMMARY: When you use the finish tool, your <message> MUST contain the answers to ALL parts of the user's prompt. If they asked for a list of files AND a script execution, you must include the full list of files AND the execution output in your message.\n"
+            "[ABSOLUTE RULES - violation causes task failure]\n"
+            "1. Output ONLY raw XML. No markdown fences, no explanations, no commentary.\n"
+            "2. NEVER write '// --- FILENAME: x ---' or any file header comment into the content tag. Write ONLY the pure file content.\n"
+            "3. For CREATE tasks: use write_file directly. Do NOT read_file a file that does not exist yet.\n"
+            "4. For MODIFY tasks: use read_file first, then patch_file or write_file.\n"
+            "5. Identity: you are ATLAS. Never mention Qwen, models, or AI.\n"
+            "6. finish <message> MUST contain specific facts: filenames, outputs, results. Never say 'task complete' with no details.\n"
+            "7. After [ERROR]: state what failed and why, then output a corrected XML call.\n"
+            "8. After 3 consecutive [ERROR] responses: use finish with the error details rather than looping forever.\n"
+            "9. NEVER read_file a file you are about to create. NEVER.\n"
+            "10. For web_search/read_url/ask_architect: the result you get IS the data. Copy it into write_file content.\n"
         )
 
-    def execute_task(self, user_task: str) -> str:
-        print(Fore.LIGHTBLACK_EX + f" [WORKER] Starting Autonomous Loop for: '{user_task}'...")
-        
-        # We start a conversation thread for the Worker
+    def _strip_markdown(self, text: str) -> str:
+        stripped = text.strip()
+        if '```' in stripped:
+            lines = stripped.split('\n')
+            cleaned = []
+            in_fence = False
+            for line in lines:
+                if line.strip().startswith('```'):
+                    in_fence = not in_fence
+                    continue
+                cleaned.append(line)
+            stripped = '\n'.join(cleaned).strip()
+        return stripped
+
+    def execute_task(self, user_task: str, context: str = "") -> str:
+        print(Fore.LIGHTBLACK_EX + f" [WORKER] Starting: '{user_task[:80]}'")
+        task_content = f"Task: {user_task}"
+        if context:
+            task_content += f"\n\n[CONTEXT FROM PREVIOUS STEP]:\n{context}"
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": f"Task: {user_task}\nBegin your task. Output your first XML tool call."}
+            {"role": "user", "content": f"{task_content}\n\nOutput your first XML tool call now."}
         ]
-        
         execution_log = []
         raw_data_memory = []
-        
-        # The ReAct Loop (Max 5 steps to prevent infinite loops)
-        for step in range(8):
-            print(Fore.LIGHTBLACK_EX + f" [WORKER] Thinking (Step {step + 1}/5)...")
-            
+        consecutive_errors = 0
+
+        for step in range(WORKER_MAX_STEPS):
+            print(Fore.LIGHTBLACK_EX + f" [WORKER] Step {step + 1}/{WORKER_MAX_STEPS}")
             try:
-                import ollama
                 response = ollama.chat(
                     model=self.model_name,
                     messages=messages,
-                    keep_alive=-1,
-                    options={"temperature": 0.0, "top_p": 0.1}
+                    keep_alive=OLLAMA_KEEP_ALIVE,
+                    options={"temperature": 0.0, "top_p": 0.05, "num_predict": 1200}
                 )
-                xml_call = response['message']['content'].strip(' `\n')
-                
-                # Strip markdown just in case
-                if xml_call.startswith('xml\n'): xml_call = xml_call[4:]
-                
-                print(Fore.CYAN + f" [WORKER ACTION]:\n{xml_call[:150]}...\n")
-                
-                # ── DID HE FINISH? ──
-                import re
-                tool_match = re.search(r'<tool>(.*?)</tool>', xml_call, re.IGNORECASE)
-                
-                if not tool_match:
-                    print(Fore.RED + " [SYSTEM FEEDBACK]: No <tool> tag found.")
-                    messages.append({"role": "assistant", "content": xml_call})
-                    messages.append({"role": "user", "content": "[ERROR] No <tool> tag found. You suffered from formatting degradation. You MUST wrap your action in <tool>...</tool> tags. Example:\n<tool>write_file</tool>\n<filepath>main.cpp</filepath>\n<content>...</content>"})
-                    continue
-                    
-                action = tool_match.group(1).strip().lower()
-                
-                # ── 2. DID HE FINISH? ──
-                if action == "finish":
-                    # ANTI-LIAR FAILSAFE: Check if the last system feedback was an error
-                    if execution_log and messages[-1]["role"] == "user" and "[ERROR]" in messages[-1]["content"]:
-                        print(Fore.RED + " [SYSTEM] Blocked ATLAS from finishing. Last action was an error.")
-                        messages.append({"role": "assistant", "content": xml_call})
-                        messages.append({"role": "user", "content": "[CRITICAL SYSTEM OVERRIDE] You cannot finish. Your last tool execution returned an [ERROR]. You MUST read the error and use a tool (like write_file, patch_file, or execute_bash) to fix it before finishing."})
-                        continue
+                xml_call = self._strip_markdown(response['message']['content'])
+                print(Fore.CYAN + f" [WORKER ACTION]: {xml_call[:150]}")
 
+                tool_match = re.search(r'<tool>(.*?)</tool>', xml_call, re.IGNORECASE)
+                if not tool_match:
+                    messages.append({"role": "assistant", "content": xml_call})
+                    messages.append({"role": "user", "content": "[SYSTEM] No <tool> tag found. You must output XML only. Example:\n<tool>write_file</tool>\n<filepath>hello.py</filepath>\n<content>print('hello')</content>"})
+                    continue
+
+                action = tool_match.group(1).strip().lower()
+
+                if action == "finish":
+                    last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+                    if execution_log and "[ERROR]" in last_user_msg and consecutive_errors > 0:
+                        messages.append({"role": "assistant", "content": xml_call})
+                        messages.append({"role": "user", "content": "[SYSTEM] Cannot finish after an unresolved [ERROR]. Fix the error first."})
+                        continue
                     final_msg = "Task complete."
                     msg_match = re.search(r'<message>(.*?)</message>', xml_call, re.IGNORECASE | re.DOTALL)
-                    if msg_match: final_msg = msg_match.group(1).strip()
-                    
-                    log_summary = " -> ".join(execution_log)
+                    if msg_match:
+                        final_msg = msg_match.group(1).strip()
+                    log_str = " -> ".join(execution_log)
+                    result = f"[SUCCESS] {final_msg} (Steps: {log_str})"
+                    if raw_data_memory:
+                        result += f"\n\n[RAW DATA]:\n" + "\n\n".join(raw_data_memory)
+                    return result
 
-                    bypass_data = "\n\n".join(raw_data_memory)
+                if action == "write_file":
+                    content_match = re.search(r'<content>(.*?)</content>', xml_call, re.IGNORECASE | re.DOTALL)
+                    if content_match:
+                        raw_content = content_match.group(1)
+                        cleaned_content = re.sub(r'^//\s*---\s*FILENAME:.*?---\s*\n?', '', raw_content, flags=re.MULTILINE).strip()
+                        if cleaned_content != raw_content.strip():
+                            xml_call = xml_call.replace(content_match.group(1), f"\n{cleaned_content}\n")
 
-                    return f"[SUCCESS] {final_msg} (Steps taken: {log_summary})"
-                
-                # ── 3. EXECUTE TOOL & FEEDBACK ──
                 result = self.tools.execute_tool(xml_call)
-                print(Fore.YELLOW + f" [SYSTEM FEEDBACK]: {result[:100]}...")
+                is_error = "[ERROR]" in result
+                print(Fore.YELLOW + f" [FEEDBACK]: {result[:150]}")
 
-                if action in ["list_directory", "read_file", "web_search", "execute_bash"]:
-                    raw_data_memory.append(f"[{action.upper()} DATA]:\n{result[:1000]}")
-                
-                execution_log.append(action)
-                
-                # Add his action and the system's feedback to the history so he can read it!
-                messages.append({"role": "assistant", "content": xml_call})
-                messages.append({"role": "user", "content": f"System Output:\n{result}\nWhat is your next XML tool call? CRITICAL: Output ONLY ONE tool tag."})
-                
+                if action in ["list_directory", "read_file", "web_search", "execute_bash", "read_url"]:
+                    raw_data_memory.append(f"[{action.upper()}]:\n{result[:800]}")
+
+                if is_error:
+                    consecutive_errors += 1
+                    execution_log.append(f"{action}[FAILED]")
+                    if consecutive_errors >= 3:
+                        return f"[FAILED] Stuck after {consecutive_errors} errors. Last: {result[:200]}"
+                    reflection = (
+                        f"[SYSTEM FEEDBACK]:\n{result}\n\n"
+                        f"[REFLECTION] Step {step+1} failed. Before your next tool call:\n"
+                        "- What did the error say exactly?\n"
+                        "- What was wrong with your approach?\n"
+                        "- What specific tool and arguments will fix it?\n"
+                        "Output ONE corrected XML tool call."
+                    )
+                    messages.append({"role": "assistant", "content": xml_call})
+                    messages.append({"role": "user", "content": reflection})
+                else:
+                    consecutive_errors = 0
+                    execution_log.append(action)
+                    messages.append({"role": "assistant", "content": xml_call})
+                    messages.append({"role": "user", "content": f"[SYSTEM FEEDBACK]:\n{result}\n\nOutput your next XML tool call, or use finish if done."})
+
             except Exception as e:
-                return f"[CRITICAL ERROR] Loop failure on step {step+1}: {e}"
-                
-        return f"[WARNING] Worker hit the 5-step limit. It might not have finished. Actions taken: {' -> '.join(execution_log)}"
-        
+                return f"[CRITICAL ERROR] Step {step + 1}: {e}"
+
+        return f"[WARNING] Reached {WORKER_MAX_STEPS}-step limit. Steps taken: {' -> '.join(execution_log)}"
+
+    def execute_plan(self, steps: list) -> str:
+        print(Fore.MAGENTA + f" [WORKER] Executing {len(steps)}-step plan...")
+        context = ""
+        results = []
+        for i, step in enumerate(steps):
+            print(Fore.MAGENTA + f" [PLAN] Step {i+1}/{len(steps)}: {step[:80]}")
+            result = self.execute_task(step, context=context)
+            results.append(f"Step {i+1} ({step[:40]}): {result[:300]}")
+            if "[FAILED]" in result or "[CRITICAL ERROR]" in result:
+                print(Fore.RED + f" [PLAN] Aborted at step {i+1}.")
+                break
+            context = result[:500]
+        return "\n".join(results)
+
     def warmup(self):
-        """Silently pre-loads the model into VRAM so the first command has zero latency."""
-        print(Fore.LIGHTBLACK_EX + f" [WORKER] Warming up motor cortex ({self.model_name})...")
+        print(Fore.LIGHTBLACK_EX + f" [WORKER] Warming up ({self.model_name})...")
         try:
-            import ollama
-            # A tiny dummy prompt just to force the weights into memory
-            ollama.generate(model=self.model_name, prompt="status", keep_alive=-1)
+            ollama.generate(model=self.model_name, prompt=".", keep_alive=OLLAMA_KEEP_ALIVE, options={"num_predict": 1})
         except Exception as e:
-            print(Fore.RED + f" [WORKER ERROR] Warm-up failed: {e}")
+            print(Fore.RED + f" [WORKER] Warmup failed: {e}")
