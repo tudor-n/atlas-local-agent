@@ -11,6 +11,7 @@ function App() {
   const [selectedModule, setSelectedModule] = useState('console');
   const [atlasMessage, setAtlasMessage] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false); 
+  const [isOpacityFixed, setIsOpacityFixed] = useState(false);
   const [history, setHistory] = useState([{ sender: 'SYSTEM', text: 'ATLAS CORE ONLINE' }]);
   const ws = useRef(null);
 
@@ -21,77 +22,216 @@ function App() {
     }
   }, [appState]);
 
-  // ==========================================
-  // MODE 1: COMPACT SURGICAL WIDGET
-  // ==========================================
+  const componentOpacityClass = `transition-opacity duration-500 ${isOpacityFixed ? 'opacity-100' : 'opacity-40 hover:opacity-100'}`;
+  const minimizedOpacityClass = `transition-opacity duration-500 ${isOpacityFixed ? 'opacity-100' : 'opacity-30 group-hover:opacity-100'}`;
+
   if (appState === 'widget') {
     return (
       <div className="w-screen h-screen flex items-center justify-center bg-transparent drag-region p-1">
-        <div className="w-full h-full glass-panel rounded-xl border border-stark-cyan/40 flex flex-col items-center justify-center p-2 bg-black/80 backdrop-blur-xl relative group">
-          <div className="w-24 h-24 pointer-events-none group-hover:scale-105 transition-transform">
-            <Orb isSpeaking={!!atlasMessage} />
+        <div className={`w-full h-full rounded-2xl border border-stark-cyan/40 flex flex-col items-center justify-between p-3 relative group transition-all duration-700 ${
+          isOpacityFixed 
+            ? 'bg-black/85 backdrop-blur-3xl' 
+            : 'bg-black/10 backdrop-blur-sm hover:bg-black/90 hover:backdrop-blur-3xl'
+        }`}>
+          
+          <div className={`w-full flex justify-start items-center px-1 pointer-events-auto z-10 ${minimizedOpacityClass}`}>
+            <span className="text-[7px] tracking-[0.3em] text-stark-cyan font-bold drag-region">A.T.L.A.S. // WIDGET HUB</span>
           </div>
-          {/* Centered Expand Button */}
-          <button onClick={() => setAppState('hub')} className="absolute inset-0 m-auto w-10 h-10 rounded-full bg-stark-cyan/20 border border-stark-cyan shadow-glow-cyan opacity-0 group-hover:opacity-100 transition-opacity no-drag flex items-center justify-center">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00f3ff" strokeWidth="3"><path d="M15 3h6v6M9 21H3v-6"/></svg>
-          </button>
-          <div className="mt-1 font-mono text-[8px] tracking-[0.4em] text-stark-cyan font-bold opacity-80">A.T.L.A.S.</div>
+
+          <div className="relative flex-1 w-full flex items-center justify-center pointer-events-none group-hover:scale-105 transition-transform duration-500 my-1">
+            <div className="w-20 h-20 relative flex items-center justify-center pointer-events-auto">
+              <Orb isSpeaking={!!atlasMessage} />
+            </div>
+            <button 
+              onClick={() => {
+                setAppState('hub');
+                if (window.electronAPI) window.electronAPI.toggleFullScreen();
+              }} 
+              className="absolute inset-0 m-auto w-10 h-10 rounded-full bg-black/60 border border-stark-cyan shadow-glow-cyan opacity-0 group-hover:opacity-100 transition-opacity duration-300 no-drag flex items-center justify-center z-50 cursor-pointer pointer-events-auto"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00f3ff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+              </svg>
+            </button>
+          </div>
+
+          <div className={`font-mono text-[9px] tracking-[0.4em] text-stark-cyan font-bold mb-1.5 text-center w-full ${minimizedOpacityClass}`}>
+            A.T.L.A.S.
+          </div>
+
+          <div className={`w-full flex justify-center gap-2 mb-1 bg-black/40 py-1.5 rounded-full border border-white/5 ${minimizedOpacityClass}`}>
+            <div className="w-1.5 h-1.5 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24]" />
+            <div className="w-1.5 h-1.5 rounded-full bg-[#f97316] shadow-[0_0_5px_#f97316]" />
+            <div className="w-1.5 h-1.5 rounded-full bg-[#1e3a8a] shadow-[0_0_5px_#1e3a8a]" />
+            <div className="w-1.5 h-1.5 rounded-full bg-stark-cyan shadow-[0_0_5px_#00f3ff]" />
+          </div>
+
         </div>
       </div>
     );
   }
 
-  // ==========================================
-  // MODE 2: HUB (Windowed & Fullscreen)
-  // ==========================================
   return (
-    <div className={`w-screen h-screen flex flex-col relative transition-all duration-700 ${isFullscreen ? 'bg-black/70 p-0' : 'bg-black/40 p-1'}`}>
+    <div className={`w-screen h-screen flex flex-col relative transition-all duration-700 ${
+      isFullscreen 
+        ? 'bg-black/85 p-0 backdrop-blur-3xl' 
+        : `group ${isOpacityFixed ? 'bg-black/70 p-1 backdrop-blur-3xl' : 'bg-black/10 p-1 backdrop-blur-sm hover:bg-black/70 hover:backdrop-blur-3xl'}`
+    }`}>
       
-      {/* NATIVE RESIZE HANDLES (Invisible edges) */}
-      {!isFullscreen && (
-        <>
-          <div className="absolute top-0 left-0 w-full h-1 cursor-ns-resize z-[100]" />
-          <div className="absolute bottom-0 left-0 w-full h-1 cursor-ns-resize z-[100]" />
-          <div className="absolute top-0 left-0 h-full w-1 cursor-ew-resize z-[100]" />
-          <div className="absolute top-0 right-0 h-full w-1 cursor-ew-resize z-[100]" />
-        </>
-      )}
-
-      <div className={`flex flex-col flex-1 relative overflow-hidden rounded-2xl border border-stark-cyan/20 backdrop-blur-3xl ${isFullscreen ? 'rounded-none border-none' : ''}`}>
+      <div className={`flex flex-col flex-1 relative overflow-hidden transition-all duration-700 ${
+        isFullscreen ? 'rounded-none border-none' : 'rounded-2xl border border-stark-cyan/20'
+      }`}>
         
-        {/* Top Header */}
-        <div className="w-full h-10 flex items-center justify-between bg-black/60 border-b border-stark-cyan/10 px-6 drag-region">
-          <span className="text-[10px] tracking-[0.4em] text-stark-cyan font-bold">A.T.L.A.S. // PRIMARY HUB</span>
-          <div className="flex gap-6 no-drag items-center">
-            <button onClick={() => setAppState('widget')} className="text-stark-cyan/40 hover:text-white transition-colors">WIDGET</button>
-            <button onClick={() => window.electronAPI.toggleFullScreen()} className="text-stark-cyan/40 hover:text-white transition-colors">FULLSCREEN</button>
-            <button onClick={() => window.electronAPI.closeApp()} className="text-stark-orange/60 hover:text-stark-orange transition-colors">SHUTDOWN</button>
+        <div className={`w-full h-12 flex items-center justify-between border-b border-stark-cyan/10 px-6 drag-region transition-colors duration-500 ${
+          isFullscreen ? 'bg-black/80' : (isOpacityFixed ? 'bg-black/40' : 'bg-transparent group-hover:bg-black/40')
+        }`}>
+          <span className="text-[10px] tracking-[0.4em] text-stark-cyan font-bold">
+            A.T.L.A.S. // {isFullscreen ? 'PRIMARY HUB' : 'MINIMIZED HUB'}
+          </span>
+          <div className="flex gap-5 no-drag items-center">
+            
+            <button 
+              onClick={() => setIsOpacityFixed(!isOpacityFixed)} 
+              className={`transition-colors ${isOpacityFixed ? 'text-stark-cyan' : 'text-stark-cyan/40 hover:text-white'}`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {isOpacityFixed ? (
+                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                ) : (
+                  <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61M2 2l20 20" />
+                )}
+                {isOpacityFixed && <circle cx="12" cy="12" r="3" />}
+              </svg>
+            </button>
+
+            <div className="w-px h-4 bg-stark-cyan/20 mx-1" />
+            
+            <button 
+              onClick={() => {
+                setAppState('widget');
+              }} 
+              className={`transition-colors ${isOpacityFixed ? 'text-stark-cyan hover:text-white' : 'text-stark-cyan/40 hover:text-white'}`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <path d="M8 12h8"/>
+              </svg>
+            </button>
+            
+            <button 
+              onClick={() => window.electronAPI?.toggleFullScreen()} 
+              className={`transition-colors ${isOpacityFixed ? 'text-stark-cyan hover:text-white' : 'text-stark-cyan/40 hover:text-white'}`}
+            >
+              {isFullscreen ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+                </svg>
+              )}
+            </button>
+            
+            <button onClick={() => window.electronAPI?.closeApp()} className={`transition-colors ${isOpacityFixed ? 'text-stark-orange hover:text-white' : 'text-stark-orange/60 hover:text-stark-orange'}`}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+                <line x1="12" y1="2" x2="12" y2="12"/>
+              </svg>
+            </button>
           </div>
         </div>
 
-        <div className="flex-1 w-full flex flex-row p-8 gap-8 no-drag">
-          {/* LEFT: Weather/Time */}
-          <div className="w-[280px] h-full opacity-60 hover:opacity-100 transition-opacity">
-            <WeatherTimeWidget />
+        {isFullscreen ? (
+          <div className="flex-1 w-full flex flex-row p-8 gap-8 no-drag relative overflow-hidden">
+            <div className={`w-[360px] h-full z-10 shrink-0 ${componentOpacityClass}`}>
+              <WeatherTimeWidget isOpacityFixed={isOpacityFixed} />
+            </div>
+            <div className="flex-1 m-auto flex flex-col items-center justify-center pointer-events-none min-h-0 z-20">
+              <div className={`flex flex-col items-center mb-6 pointer-events-auto ${componentOpacityClass}`}>
+                <h1 className="glitch-text text-7xl font-bold tracking-[0.5em] mb-2" data-text="A.T.L.A.S.">A.T.L.A.S.</h1>
+                <h2 className="glitch-text text-xs tracking-[0.6em] text-stark-cyan/80 font-bold" data-text="BLACKWELL JV2.0 ARCH">BLACKWELL JV2.0 ARCH</h2>
+              </div>
+              <div className="relative flex items-center justify-center pointer-events-auto shrink-0 w-[450px] h-[450px]">
+                <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-auto">
+                  <Orb isSpeaking={!!atlasMessage} />
+                </div>
+                <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+                   <AppCarousel activeApp={selectedModule} setActiveApp={setSelectedModule} isOpacityFixed={isOpacityFixed} isFullscreen={isFullscreen} />
+                </div>
+              </div>
+              <div className={`mt-6 flex gap-5 px-8 py-3 bg-black/60 border border-stark-cyan/20 rounded-full backdrop-blur-md pointer-events-auto shrink-0 ${componentOpacityClass}`}>
+                <div className="flex items-center gap-2.5">
+                  <div className="w-2 h-2 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24] animate-pulse" />
+                  <span className="text-[10px] text-[#fbbf24] tracking-[0.2em] font-mono">ACTIVE: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">2</span></span>
+                </div>
+                <div className="w-px h-3.5 bg-white/20 self-center" />
+                <div className="flex items-center gap-2.5">
+                  <div className="w-2 h-2 rounded-full bg-[#f97316] shadow-[0_0_5px_#f97316]" />
+                  <span className="text-[10px] text-[#f97316] tracking-[0.2em] font-mono">QUEUED: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">5</span></span>
+                </div>
+                <div className="w-px h-3.5 bg-white/20 self-center" />
+                <div className="flex items-center gap-2.5">
+                  <div className="w-2 h-2 rounded-full bg-[#1e3a8a] shadow-[0_0_5px_#1e3a8a]" />
+                  <span className="text-[10px] text-[#426bdc] tracking-[0.2em] font-mono">DONE: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">12</span></span>
+                </div>
+                <div className="w-px h-3.5 bg-white/20 self-center" />
+                <div className="flex items-center gap-2.5">
+                  <div className="w-2 h-2 rounded-full bg-stark-cyan shadow-[0_0_5px_#00f3ff]" />
+                  <span className="text-[10px] text-stark-cyan tracking-[0.2em] font-mono">AGENTS: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">4</span></span>
+                </div>
+              </div>
+            </div>
+            <div className={`ml-auto w-[360px] h-full z-10 shrink-0 ${componentOpacityClass}`}>
+               <div className="w-full h-full glass-panel rounded-2xl border border-stark-cyan/20 bg-black/40 overflow-hidden">
+                 <MiniConsole history={history} ws={null} />
+               </div>
+            </div>
           </div>
-
-          {/* CENTER: Main Engine */}
-          <div className="flex-1 h-full flex flex-col items-center justify-center relative">
-            <h1 className="glitch-text text-6xl font-bold tracking-[0.5em] mb-4" data-text="A.T.L.A.S.">A.T.L.A.S.</h1>
-            <div className="w-[500px] h-[500px] relative"><Orb isSpeaking={!!atlasMessage} /></div>
-            <AppCarousel activeApp={selectedModule} setActiveApp={setSelectedModule} />
-          </div>
-
-          {/* RIGHT: Console with Fixed Boundaries */}
-          <div className="w-[380px] h-full">
-             <div className="w-full h-full glass-panel rounded-2xl border border-stark-cyan/20 bg-black/40 opacity-60 hover:opacity-100 transition-opacity overflow-hidden">
+        ) : (
+          <div className="flex-1 w-full flex flex-col p-4 gap-3 no-drag relative overflow-hidden">
+            <div className="flex items-center justify-center gap-4 w-full shrink-0 pointer-events-auto">
+              <div className="w-16 h-16 shrink-0 relative flex items-center justify-center">
+                <Orb isSpeaking={!!atlasMessage} />
+              </div>
+              <div className={`flex flex-col justify-center ${minimizedOpacityClass}`}>
+                <h1 className="glitch-text text-3xl font-bold tracking-[0.4em] mb-1" data-text="A.T.L.A.S.">A.T.L.A.S.</h1>
+                <h2 className="glitch-text text-[7px] tracking-[0.4em] text-stark-cyan/80 font-bold" data-text="BLACKWELL JV2.0 ARCH">BLACKWELL JV2.0 ARCH</h2>
+              </div>
+            </div>
+            <div className={`flex-1 w-full min-h-0 glass-panel rounded-xl border border-stark-cyan/20 bg-black/40 overflow-hidden ${minimizedOpacityClass}`}>
                <MiniConsole history={history} ws={null} />
-             </div>
+            </div>
+            <div className={`w-full flex justify-between px-4 py-2.5 bg-black/60 border border-stark-cyan/20 rounded-xl backdrop-blur-md pointer-events-auto shrink-0 ${minimizedOpacityClass}`}>
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24] animate-pulse" />
+                <span className="text-[8px] text-[#fbbf24] tracking-[0.1em] font-mono">ACTIVE:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">2</span></span>
+              </div>
+              <div className="w-px h-3 bg-white/20 self-center" />
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-[#f97316] shadow-[0_0_5px_#f97316]" />
+                <span className="text-[8px] text-[#f97316] tracking-[0.1em] font-mono">QUEUED:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">5</span></span>
+              </div>
+              <div className="w-px h-3 bg-white/20 self-center" />
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-[#1e3a8a] shadow-[0_0_5px_#1e3a8a]" />
+                <span className="text-[8px] text-[#426bdc] tracking-[0.1em] font-mono">DONE:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">12</span></span>
+              </div>
+              <div className="w-px h-3 bg-white/20 self-center" />
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-stark-cyan shadow-[0_0_5px_#00f3ff]" />
+                <span className="text-[8px] text-stark-cyan tracking-[0.1em] font-mono">AGENTS:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">4</span></span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className={`w-full p-4 pt-0 no-drag shrink-0 ${isFullscreen ? 'p-6' : ''}`}>
+          <div className={componentOpacityClass}>
+            <SystemVitalsWidget isOpacityFixed={isOpacityFixed} compact={!isFullscreen} />
           </div>
         </div>
 
-        {/* BOTTOM: Vitals */}
-        <div className="w-full p-6 pt-0 no-drag"><SystemVitalsWidget /></div>
       </div>
     </div>
   );
