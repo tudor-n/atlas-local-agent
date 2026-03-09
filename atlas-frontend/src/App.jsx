@@ -13,7 +13,11 @@ function App() {
   const [isFullscreen, setIsFullscreen] = useState(false); 
   const [isOpacityFixed, setIsOpacityFixed] = useState(false);
   const [history, setHistory] = useState([{ sender: 'SYSTEM', text: 'ATLAS CORE ONLINE' }]);
-  const ws = useRef(null);
+  const [vitals, setVitals] = useState({ cpu: 12, mem: 45, gpu_temp: 68 });
+  
+  // Storing the WebSocket in state triggers React re-renders so the console input connects!
+  const [ws, setWs] = useState(null);
+  const speakingTimeoutRef = useRef(null);
 
   useEffect(() => {
     if (window.electronAPI) {
@@ -21,6 +25,37 @@ function App() {
       window.electronAPI.onMaximizedStatus((status) => setIsFullscreen(status));
     }
   }, [appState]);
+
+  useEffect(() => {
+    const socket = new WebSocket('ws://localhost:8000/ws');
+    setWs(socket);
+    
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      
+      if (data.type === 'user_speak') {
+        setHistory(prev => [...prev, { sender: 'TUDOR', text: data.payload.text }]);
+      } else if (data.type === 'atlas_speak') {
+        setHistory(prev => [...prev, { sender: 'ATLAS', text: data.payload.text }]);
+        setAtlasMessage(data.payload.text);
+        
+        if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
+        speakingTimeoutRef.current = setTimeout(() => setAtlasMessage(''), 3000 + (data.payload.text.length * 50));
+      } else if (data.type === 'system_vitals') {
+        setVitals({
+          cpu: Math.round(data.payload.cpu),
+          mem: Math.round(data.payload.mem),
+          gpu_temp: Math.round(data.payload.gpu_temp)
+        });
+      } else if (data.type === 'switch_app') {
+        setSelectedModule(data.payload.app);
+      }
+    };
+
+    return () => {
+      socket.close();
+    };
+  }, []);
 
   const componentOpacityClass = `transition-opacity duration-500 ${isOpacityFixed ? 'opacity-100' : 'opacity-40 hover:opacity-100'}`;
   const minimizedOpacityClass = `transition-opacity duration-500 ${isOpacityFixed ? 'opacity-100' : 'opacity-30 group-hover:opacity-100'}`;
@@ -184,7 +219,7 @@ function App() {
             </div>
             <div className={`ml-auto w-[360px] h-full z-10 shrink-0 ${componentOpacityClass}`}>
                <div className="w-full h-full glass-panel rounded-2xl border border-stark-cyan/20 bg-black/40 overflow-hidden">
-                 <MiniConsole history={history} ws={null} />
+                 <MiniConsole history={history} ws={ws} />
                </div>
             </div>
           </div>
@@ -200,7 +235,7 @@ function App() {
               </div>
             </div>
             <div className={`flex-1 w-full min-h-0 glass-panel rounded-xl border border-stark-cyan/20 bg-black/40 overflow-hidden ${minimizedOpacityClass}`}>
-               <MiniConsole history={history} ws={null} />
+               <MiniConsole history={history} ws={ws} />
             </div>
             <div className={`w-full flex justify-between px-4 py-2.5 bg-black/60 border border-stark-cyan/20 rounded-xl backdrop-blur-md pointer-events-auto shrink-0 ${minimizedOpacityClass}`}>
               <div className="flex items-center gap-1.5">
@@ -228,7 +263,7 @@ function App() {
 
         <div className={`w-full p-4 pt-0 no-drag shrink-0 ${isFullscreen ? 'p-6' : ''}`}>
           <div className={componentOpacityClass}>
-            <SystemVitalsWidget isOpacityFixed={isOpacityFixed} compact={!isFullscreen} />
+            <SystemVitalsWidget isOpacityFixed={isOpacityFixed} compact={!isFullscreen} vitals={vitals} />
           </div>
         </div>
 
