@@ -1,0 +1,16 @@
+ollama
+chromadb
+sentence-transformers
+colorama
+psutil
+numpy
+scikit-learn
+sounddevice
+soundfile
+torch
+kokoro
+faster-whisper
+fastapi
+uvicorn
+websockets
+duckduckgo-search
