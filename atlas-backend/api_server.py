@@ -1,12 +1,15 @@
 import asyncio
 import json
+import os as _os
 import queue
 import random
+import re as _re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 import psutil
 import uvicorn
 
@@ -28,7 +31,7 @@ from core.senses.voice import Mouth
 from core.senses.hearing import Ear
 from core.brain.sensorimotor.motor import MotorCortex
 from core.brain.interface.worker import WorkerNode
-from config import VOICE_BLEND
+from config import VOICE_BLEND, SANDBOX_PATH
 
 # ---------------------------------------------------------------------------
 # App & CORS
@@ -57,6 +60,36 @@ _ACKS             = [
 ]
 
 # ---------------------------------------------------------------------------
+# Runtime Status Tracker
+# ---------------------------------------------------------------------------
+
+_runtime_status = {
+    "active":  0,   # tasks currently executing (WorkerNode busy)
+    "queued":  0,   # pending TaskQueue entries
+    "done":    0,   # completed this session
+    "agents":  1,   # always 1 for now (the single WorkerNode)
+}
+
+def _refresh_status():
+    """Recompute status from live sources. Call before emitting."""
+    pending = task_queue.get_pending()
+    _runtime_status["queued"]  = len(pending)
+    _runtime_status["active"]  = 1 if atlas_busy.is_set() else 0
+
+def _emit_status():
+    _refresh_status()
+    emit("status_update", dict(_runtime_status))
+
+def _emit_task_files(result: str, original_task: str):
+    """Extract written filenames from worker result and broadcast."""
+    found = _re.findall(
+        r'(?:Wrote to|Created|saved|file[s]?:?)\s+([\w./\\-]+\.\w+)',
+        result, _re.IGNORECASE
+    )
+    if found:
+        emit("task_files", {"files": found, "task": original_task[:120]})
+
+# ---------------------------------------------------------------------------
 # System Initialisation
 # ---------------------------------------------------------------------------
 
@@ -78,7 +111,15 @@ vta        = RewardSystem()
 user_model = UserModel()
 executive  = Executive(bus)
 motor      = MotorCortex()
-worker     = WorkerNode()
+
+def _on_worker_step(step_index: int, action: str, result: str):
+    emit("worker_step_done", {
+        "step_index": step_index,
+        "action":     action,
+        "result":     result,
+    })
+
+worker     = WorkerNode(on_step_done=_on_worker_step)
 # worker.warmup() removed — model loads on-demand via VRAMManager on first COMMAND
 _main_loop = None
 
@@ -198,6 +239,9 @@ def run_cognition(user_input: str):
             synthesized = brain.synthesize_task(user_input)
             emit("orchestrator", {"task": synthesized[:200]})
 
+            _runtime_status["active"] = 1
+            _emit_status()
+
             if synthesized.startswith("[MULTI_STEP]"):
                 raw_steps = synthesized.replace("[MULTI_STEP]", "").strip()
                 steps = [s.strip() for s in raw_steps.split("|") if s.strip()]
@@ -207,6 +251,11 @@ def run_cognition(user_input: str):
                 sys_result = worker.execute_plan(steps)
             else:
                 sys_result = worker.execute_task(synthesized)
+
+            _runtime_status["active"] = 0
+            _runtime_status["done"] += 1
+            _emit_status()
+            _emit_task_files(sys_result, user_input)
 
             llm_input = (
                 f"Task requested: '{user_input}'.\n"
@@ -409,6 +458,96 @@ async def shutdown_event():
     except Exception:
         pass
     print("[SYS] Server offline.")
+
+
+from core.brain.cognition.memory import MemorySystem
+
+@app.get("/memory/list")
+async def memory_list():
+    mem = MemorySystem()
+    if mem.collection.count() == 0:
+        return {"memories": [], "total": 0}
+    results = mem.collection.get(include=["documents", "metadatas"])
+    memories = []
+    for doc_id, doc, meta in zip(results["ids"], results["documents"], results["metadatas"]):
+        memories.append({
+            "id":         doc_id,
+            "text":       doc,
+            "importance": meta.get("importance", 5.0),
+            "tags":       meta.get("tags", "").split(",") if meta.get("tags") else [],
+            "timestamp":  meta.get("timestamp", ""),
+        })
+    memories.sort(key=lambda x: x["importance"], reverse=True)
+    return {"memories": memories, "total": len(memories)}
+
+
+@app.get("/memory/search")
+async def memory_search(q: str = ""):
+    mem = MemorySystem()
+    if not q.strip() or mem.collection.count() == 0:
+        return {"memories": [], "total": 0}
+    results = mem.recall(q, n_results=20, similarity_threshold=0.6)
+    all_data = mem.collection.get(include=["documents", "metadatas"])
+    text_to_meta = {doc: meta for doc, meta in zip(all_data["documents"], all_data["metadatas"])}
+    text_to_id   = {doc: doc_id for doc, doc_id in zip(all_data["documents"], all_data["ids"])}
+    memories = []
+    for text in results:
+        meta = text_to_meta.get(text, {})
+        memories.append({
+            "id":         text_to_id.get(text, ""),
+            "text":       text,
+            "importance": meta.get("importance", 5.0),
+            "tags":       meta.get("tags", "").split(",") if meta.get("tags") else [],
+            "timestamp":  meta.get("timestamp", ""),
+        })
+    return {"memories": memories, "total": len(memories)}
+
+
+@app.get("/status")
+async def get_status():
+    _refresh_status()
+    return dict(_runtime_status)
+
+
+@app.get("/sandbox/files")
+async def sandbox_files():
+    """Return a flat list of relative file paths inside the sandbox."""
+    if not _os.path.exists(SANDBOX_PATH):
+        return {"files": []}
+    result = []
+    for root, dirs, files in _os.walk(SANDBOX_PATH):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+        for f in sorted(files):
+            if not f.endswith(('.pyc', '.exe', '.db')):
+                rel = _os.path.relpath(_os.path.join(root, f), SANDBOX_PATH)
+                result.append(rel.replace('\\', '/'))
+    return {"files": sorted(result), "sandbox_path": SANDBOX_PATH}
+
+
+@app.get("/sandbox/file")
+async def sandbox_file(path: str = Query(...)):
+    """Return raw content of a file inside the sandbox."""
+    safe = _os.path.abspath(_os.path.join(SANDBOX_PATH, path))
+    if not safe.startswith(_os.path.abspath(SANDBOX_PATH)):
+        return PlainTextResponse("// SANDBOX ESCAPE BLOCKED", status_code=403)
+    if not _os.path.isfile(safe):
+        return PlainTextResponse("// FILE NOT FOUND", status_code=404)
+    try:
+        with open(safe, 'r', encoding='utf-8', errors='replace') as fh:
+            content = fh.read()
+        return PlainTextResponse(content)
+    except Exception as e:
+        return PlainTextResponse(f"// READ ERROR: {e}", status_code=500)
+
+
+@app.delete("/memory/{memory_id}")
+async def memory_delete(memory_id: str):
+    mem = MemorySystem()
+    try:
+        mem.collection.delete(ids=[memory_id])
+        return {"success": True, "deleted": memory_id}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.websocket("/ws")

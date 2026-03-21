@@ -260,7 +260,6 @@ class LLMEngine:
             "RULE 11 - DELETE: If user says 'delete', 'erase', 'remove' a file → 'Use the delete_file tool to delete [filename].'\n"
             "RULE 12 - CREATE FILE: If user asks to create/write a specific file → 'Write [filename] with content: [description] using write_file.'\n\n"
             "NEGATIVE EXAMPLES (never do these):\n"
-            "- The closing remark must be about the session ending or Tudor's next move — NOT about your relationship or shared history.\n"
             "- DO NOT reference anything that happened between you. No compliments. No inside jokes. No 'you still owe me'.\n"
             "- NEVER output terminal commands like 'cat', 'ls', 'dir' as the task.\n"
             "- NEVER tell the worker to read_file a file that the user is asking to CREATE.\n"

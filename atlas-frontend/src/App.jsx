@@ -18,6 +18,10 @@ import WeatherTimeWidget from './components/WeatherTimeWidget';
 import SystemVitalsWidget from './components/SystemVitalsWidget';
 import AppCarousel from './components/AppCarousel';
 import ConsoleFullView from './components/ConsoleFullView';
+import CognitiveBadge from './components/CognitiveBadge';
+import TaskMonitorApp from './components/TaskMonitorApp';
+import MemoryApp from './components/MemoryApp';
+import CodeApp from './components/CodeApp';
 
 // HAND TRACKING
 import { useHandTracking } from './hooks/useHandTracking';
@@ -26,7 +30,7 @@ import HandCursor from './components/HandCursor';
 // WEBSOCKET
 import { useAtlasSocket } from './hooks/useAtlasSocket';
 
-const APPS = ['settings', 'weather', 'console', 'code', 'models', 'cursor'];
+const APPS = ['code', 'weather', 'console', 'tasks', 'memory', 'cursor'];
 const MAX_HISTORY = 200;
 
 function App() {
@@ -38,6 +42,14 @@ function App() {
   const [isOpacityFixed, setIsOpacityFixed] = useState(false);
   const [history,        setHistory]        = useState([{ sender: 'SYSTEM', text: 'ATLAS CORE ONLINE' }]);
   const [vitals,         setVitals]         = useState({ cpu: 12, mem: 45, gpu_temp: 68 });
+  const [streamingText,    setStreamingText]    = useState('');
+  const [cognitiveData,    setCognitiveData]    = useState(null);
+  const [activePlan,       setActivePlan]       = useState(null);
+  const [orchestratorTask, setOrchestratorTask] = useState('');
+  const [isInterrupted,    setIsInterrupted]    = useState(false);
+  const [highSalienceLog,  setHighSalienceLog]  = useState([]);
+  const [statusCounts,     setStatusCounts]     = useState({ active: 0, queued: 0, done: 0, agents: 1 });
+  const [lastTaskFiles,    setLastTaskFiles]    = useState(null);
 
   const speakingTimeoutRef = useRef(null);
 
@@ -82,7 +94,7 @@ function App() {
   }, [swipeDir, isFullscreen, openedApp]);
 
   // HAND TRACKING: pinch handler — swipe mode opens app, mouse mode handled via DOM
-  const OPENABLE_APPS = ['console']; // extend this as you build out other full views
+  const OPENABLE_APPS = ['console', 'tasks', 'memory', 'code'];
 
   useEffect(() => {
     if (pinchClick === 0) return;
@@ -94,6 +106,14 @@ function App() {
       }
     }
   }, [pinchClick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch initial status counts so the bar isn't zero before first interaction
+  useEffect(() => {
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/status`)
+      .then(r => r.json())
+      .then(d => setStatusCounts(d))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (window.electronAPI) {
@@ -108,6 +128,7 @@ function App() {
     if (data.type === 'user_speak') {
       setHistory(prev => { const next = [...prev, { sender: 'TUDOR', text: data.payload.text }]; return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next; });
     } else if (data.type === 'atlas_speak') {
+      setStreamingText('');
       setHistory(prev => { const next = [...prev, { sender: 'ATLAS', text: data.payload.text }]; return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next; });
       setAtlasMessage(data.payload.text);
       if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
@@ -115,18 +136,72 @@ function App() {
         () => setAtlasMessage(''),
         3000 + data.payload.text.length * 50
       );
+    } else if (data.type === 'atlas_token') {
+      setStreamingText(prev => prev + data.payload.text);
+    } else if (data.type === 'cognitive_metadata') {
+      setCognitiveData({
+        intent:   data.payload.intent,
+        salience: data.payload.salience,
+        mood:     data.payload.mood,
+        urgency:  data.payload.urgency,
+      });
+    } else if (data.type === 'executive_plan') {
+      setActivePlan({
+        steps:      data.payload.steps,
+        activeStep: 0,
+        completed:  data.payload.steps.map(() => false),
+      });
+      setSelectedModule('tasks');
+    } else if (data.type === 'orchestrator') {
+      setOrchestratorTask(data.payload.task);
+    } else if (data.type === 'atlas_interrupted') {
+      setStreamingText('');
+      setIsInterrupted(true);
+      setTimeout(() => setIsInterrupted(false), 2000);
+    } else if (data.type === 'high_salience') {
+      setHighSalienceLog(prev => [
+        { text: data.payload.event, ts: Date.now() },
+        ...prev,
+      ].slice(0, 20));
+    } else if (data.type === 'user_state') {
+      setCognitiveData(prev => prev
+        ? { ...prev, mood: data.payload.state.mood, urgency: data.payload.state.urgency }
+        : { intent: '—', salience: 0, ...data.payload.state }
+      );
     } else if (data.type === 'system_vitals') {
       setVitals({
         cpu:      Math.round(data.payload.cpu),
         mem:      Math.round(data.payload.mem),
         gpu_temp: Math.round(data.payload.gpu_temp),
       });
+    } else if (data.type === 'status_update') {
+      setStatusCounts({
+        active: data.payload.active ?? 0,
+        queued: data.payload.queued ?? 0,
+        done:   data.payload.done   ?? 0,
+        agents: data.payload.agents ?? 1,
+      });
+    } else if (data.type === 'task_files') {
+      setLastTaskFiles(data.payload);
+    } else if (data.type === 'worker_step_done') {
+      setActivePlan(prev => {
+        if (!prev) return prev;
+        const completed = [...prev.completed];
+        if (data.payload.step_index < completed.length) {
+          completed[data.payload.step_index] = true;
+        }
+        return {
+          ...prev,
+          completed,
+          activeStep: Math.min(data.payload.step_index + 1, prev.steps.length - 1),
+        };
+      });
     } else if (data.type === 'switch_app') {
       setSelectedModule(data.payload.app);
     }
   }, []);
 
-  const { ws: wsRef, connected } = useAtlasSocket({ onMessage: handleWsMessage });
+  const { ws: wsRef } = useAtlasSocket({ onMessage: handleWsMessage });
 
   // Stable callbacks for memoized children
   const handleAppOpen = useCallback((id) => {
@@ -134,6 +209,10 @@ function App() {
     else setOpenedApp(id);
   }, []);
   const handleConsoleBack = useCallback(() => setOpenedApp(null), []);
+  const handleOpenCode = useCallback((files) => {
+    setLastTaskFiles(files);
+    setOpenedApp('code');
+  }, []);
 
   const componentOpacityClass = `transition-opacity duration-500 ${isOpacityFixed ? 'opacity-100' : 'opacity-40 hover:opacity-100'}`;
   const minimizedOpacityClass = `transition-opacity duration-500 ${isOpacityFixed ? 'opacity-100' : 'opacity-30 group-hover:opacity-100'}`;
@@ -321,7 +400,31 @@ function App() {
           <AnimatePresence mode="wait">
             {openedApp === 'console' ? (
               <motion.div key="console-full" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} transition={{ duration:0.2 }} className="flex-1 min-h-0 overflow-hidden">
-                <ConsoleFullView history={history} ws={wsRef.current} onBack={handleConsoleBack} isOpacityFixed={isOpacityFixed} />
+                <ConsoleFullView history={history} ws={wsRef.current} onBack={handleConsoleBack} isOpacityFixed={isOpacityFixed} streamingText={streamingText} isInterrupted={isInterrupted} cognitiveData={cognitiveData} activePlan={activePlan} orchestratorTask={orchestratorTask} lastTaskFiles={lastTaskFiles} onOpenCode={handleOpenCode} />
+              </motion.div>
+            ) : openedApp === 'tasks' ? (
+              <motion.div key="tasks-full" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} transition={{ duration:0.2 }} className="flex-1 min-h-0 overflow-hidden">
+                <TaskMonitorApp
+                  activePlan={activePlan}
+                  orchestratorTask={orchestratorTask}
+                  highSalienceLog={highSalienceLog}
+                  cognitiveData={cognitiveData}
+                  lastTaskFiles={lastTaskFiles}
+                  onBack={handleConsoleBack}
+                  onOpenCode={handleOpenCode}
+                />
+              </motion.div>
+            ) : openedApp === 'memory' ? (
+              <motion.div key="memory-full" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} transition={{ duration:0.2 }} className="flex-1 min-h-0 overflow-hidden">
+                <MemoryApp onBack={handleConsoleBack} />
+              </motion.div>
+            ) : openedApp === 'code' ? (
+              <motion.div key="code-full" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} transition={{ duration:0.2 }} className="flex-1 min-h-0 overflow-hidden">
+                <CodeApp
+                  initialFiles={lastTaskFiles?.files ?? []}
+                  taskDescription={lastTaskFiles?.task ?? ''}
+                  onBack={handleConsoleBack}
+                />
               </motion.div>
             ) : (
               <motion.div key="hub" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} transition={{ duration:0.2 }} className="flex-1 min-h-0 flex flex-col overflow-hidden">
@@ -341,17 +444,20 @@ function App() {
                           <Orb isSpeaking={!!atlasMessage} />
                         </div>
                         <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
-                          <AppCarousel activeApp={selectedModule} setActiveApp={setSelectedModule} onAppOpen={handleAppOpen} isOpacityFixed={isOpacityFixed} isFullscreen={isFullscreen} />
+                          <AppCarousel activeApp={selectedModule} setActiveApp={setSelectedModule} onAppOpen={handleAppOpen} isOpacityFixed={isOpacityFixed} isFullscreen={isFullscreen} activePlan={activePlan} lastTaskFiles={lastTaskFiles} />
                         </div>
                       </div>
-                      <div data-hand-component className={`mt-6 flex gap-5 px-8 py-3 bg-black/60 border border-stark-cyan/20 rounded-full backdrop-blur-md pointer-events-auto shrink-0 ${componentOpacityClass}`}>
-                        <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24] animate-pulse"/><span className="text-[10px] text-[#fbbf24] tracking-[0.2em] font-mono">ACTIVE: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">2</span></span></div>
-                        <div className="w-px h-3.5 bg-white/20 self-center"/>
-                        <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-[#f97316] shadow-[0_0_5px_#f97316]"/><span className="text-[10px] text-[#f97316] tracking-[0.2em] font-mono">QUEUED: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">5</span></span></div>
-                        <div className="w-px h-3.5 bg-white/20 self-center"/>
-                        <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-[#1e3a8a] shadow-[0_0_5px_#1e3a8a]"/><span className="text-[10px] text-[#426bdc] tracking-[0.2em] font-mono">DONE: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">12</span></span></div>
-                        <div className="w-px h-3.5 bg-white/20 self-center"/>
-                        <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-stark-cyan shadow-[0_0_5px_#00f3ff]"/><span className="text-[10px] text-stark-cyan tracking-[0.2em] font-mono">AGENTS: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">4</span></span></div>
+                      <div data-hand-component className={`mt-6 flex flex-col items-center gap-4 shrink-0 pointer-events-auto ${componentOpacityClass}`}>
+                        {cognitiveData && <CognitiveBadge data={cognitiveData} />}
+                        <div className="flex gap-5 px-8 py-3 bg-black/60 border border-stark-cyan/20 rounded-full backdrop-blur-md">
+                          <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24]" style={{ animation: statusCounts.active > 0 ? 'pulse 1s infinite' : 'none' }}/><span className="text-[10px] text-[#fbbf24] tracking-[0.2em] font-mono">ACTIVE: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">{statusCounts.active}</span></span></div>
+                          <div className="w-px h-3.5 bg-white/20 self-center"/>
+                          <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-[#f97316] shadow-[0_0_5px_#f97316]"/><span className="text-[10px] text-[#f97316] tracking-[0.2em] font-mono">QUEUED: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">{statusCounts.queued}</span></span></div>
+                          <div className="w-px h-3.5 bg-white/20 self-center"/>
+                          <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-[#1e3a8a] shadow-[0_0_5px_#1e3a8a]"/><span className="text-[10px] text-[#426bdc] tracking-[0.2em] font-mono">DONE: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">{statusCounts.done}</span></span></div>
+                          <div className="w-px h-3.5 bg-white/20 self-center"/>
+                          <div className="flex items-center gap-2.5"><div className={`w-2 h-2 rounded-full ${statusCounts.active > 0 ? 'bg-stark-cyan shadow-[0_0_5px_#00f3ff] animate-pulse' : 'bg-stark-cyan/30'}`}/><span className="text-[10px] text-stark-cyan tracking-[0.2em] font-mono">AGENTS: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">{statusCounts.agents}</span></span></div>
+                        </div>
                       </div>
                     </div>
                     <div data-hand-component className={`ml-auto w-[360px] h-full z-10 shrink-0 ${componentOpacityClass}`}>
@@ -373,13 +479,13 @@ function App() {
                       <MiniConsole history={history} ws={wsRef.current} />
                     </div>
                     <div className={`w-full flex justify-between px-4 py-2.5 bg-black/60 border border-stark-cyan/20 rounded-xl backdrop-blur-md pointer-events-auto shrink-0 ${minimizedOpacityClass}`}>
-                      <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24] animate-pulse"/><span className="text-[8px] text-[#fbbf24] tracking-[0.1em] font-mono">ACTIVE:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">2</span></span></div>
+                      <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24]" style={{ animation: statusCounts.active > 0 ? 'pulse 1s infinite' : 'none' }}/><span className="text-[8px] text-[#fbbf24] tracking-[0.1em] font-mono">ACTIVE:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">{statusCounts.active}</span></span></div>
                       <div className="w-px h-3 bg-white/20 self-center"/>
-                      <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-[#f97316] shadow-[0_0_5px_#f97316]"/><span className="text-[8px] text-[#f97316] tracking-[0.1em] font-mono">QUEUED:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">5</span></span></div>
+                      <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-[#f97316] shadow-[0_0_5px_#f97316]"/><span className="text-[8px] text-[#f97316] tracking-[0.1em] font-mono">QUEUED:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">{statusCounts.queued}</span></span></div>
                       <div className="w-px h-3 bg-white/20 self-center"/>
-                      <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-[#1e3a8a] shadow-[0_0_5px_#1e3a8a]"/><span className="text-[8px] text-[#426bdc] tracking-[0.1em] font-mono">DONE:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">12</span></span></div>
+                      <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-[#1e3a8a] shadow-[0_0_5px_#1e3a8a]"/><span className="text-[8px] text-[#426bdc] tracking-[0.1em] font-mono">DONE:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">{statusCounts.done}</span></span></div>
                       <div className="w-px h-3 bg-white/20 self-center"/>
-                      <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-stark-cyan shadow-[0_0_5px_#00f3ff]"/><span className="text-[8px] text-stark-cyan tracking-[0.1em] font-mono">AGENTS:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">4</span></span></div>
+                      <div className="flex items-center gap-1.5"><div className={`w-1.5 h-1.5 rounded-full ${statusCounts.active > 0 ? 'bg-stark-cyan shadow-[0_0_5px_#00f3ff] animate-pulse' : 'bg-stark-cyan/30'}`}/><span className="text-[8px] text-stark-cyan tracking-[0.1em] font-mono">AGENTS:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">{statusCounts.agents}</span></span></div>
                     </div>
                   </div>
                 )}

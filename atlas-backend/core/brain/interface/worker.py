@@ -8,9 +8,10 @@ from core.brain.interface.vram_manager import vram
 
 
 class WorkerNode:
-    def __init__(self, model_name=WORKER_MODEL):
+    def __init__(self, model_name=WORKER_MODEL, on_step_done=None):
         self.model_name = model_name
         self.tools = ToolRegistry()
+        self.on_step_done = on_step_done   # callable(step_index, action, result) | None
         vram.register("worker", self.model_name)
         self.system_prompt = (
             "You are ATLAS's internal autonomous operator. Execute tasks by outputting XML tool calls.\n\n"
@@ -135,6 +136,8 @@ class WorkerNode:
                 else:
                     consecutive_errors = 0
                     execution_log.append(action)
+                    if self.on_step_done:
+                        self.on_step_done(len(execution_log) - 1, action, result[:200])
                     messages.append({"role": "assistant", "content": xml_call})
                     messages.append({"role": "user", "content": f"[SYSTEM FEEDBACK]:\n{result}\n\nOutput your next XML tool call, or use finish if done."})
 
@@ -151,6 +154,8 @@ class WorkerNode:
             print(Fore.MAGENTA + f" [PLAN] Step {i+1}/{len(steps)}: {step[:80]}")
             result = self.execute_task(step, context=context)
             results.append(f"Step {i+1} ({step[:40]}): {result[:300]}")
+            if self.on_step_done:
+                self.on_step_done(i, step[:80], result[:200])
             if "[FAILED]" in result or "[CRITICAL ERROR]" in result:
                 print(Fore.RED + f" [PLAN] Aborted at step {i+1}.")
                 break

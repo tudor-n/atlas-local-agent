@@ -2,15 +2,20 @@ import { memo } from 'react';
 import { motion } from 'framer-motion';
 
 const apps = [
-  { id: 'settings', name: 'CONFIG' },
+  { id: 'code',    name: 'CODE' },
   { id: 'weather', name: 'WEATHER' },
   { id: 'console', name: 'CONSOLE' },
-  { id: 'code', name: 'CODE' },
-  { id: 'models', name: 'HOLO' },
-  { id: 'cursor', name: 'CURSOR', amber: true },
+  { id: 'tasks',   name: 'TASKS' },
+  { id: 'memory',  name: 'MEMORY' },
+  { id: 'cursor',  name: 'CURSOR', amber: true },
 ];
 
-export default memo(function AppCarousel({ activeApp, setActiveApp, onAppOpen, isOpacityFixed, isFullscreen }) {
+export default memo(function AppCarousel({
+  activeApp, setActiveApp, onAppOpen,
+  isOpacityFixed, isFullscreen,
+  activePlan,
+  lastTaskFiles,
+}) {
   const activeIndex = apps.findIndex(app => app.id === activeApp);
 
   const handleOrbClick = (app, isCenter) => {
@@ -45,7 +50,7 @@ export default memo(function AppCarousel({ activeApp, setActiveApp, onAppOpen, i
               onClick={() => handleOrbClick(app, isCenter)}
               title={isCenter ? (amber ? 'Switch to cursor mode' : `Open ${app.name}`) : `Switch to ${app.name}`}
             >
-              <div className={`w-14 h-14 rounded-full border flex items-center justify-center backdrop-blur-md transition-all duration-200 ${
+              <div className={`relative w-14 h-14 rounded-full border flex items-center justify-center backdrop-blur-md transition-all duration-200 ${
                 isCenter
                   ? amber
                     ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_18px_rgba(251,191,36,0.5)] group-hover:bg-amber-400/35 group-hover:shadow-[0_0_25px_rgba(251,191,36,0.7)]'
@@ -54,8 +59,13 @@ export default memo(function AppCarousel({ activeApp, setActiveApp, onAppOpen, i
                     ? 'bg-black/80 border-amber-400/40 hover:border-amber-400/70'
                     : 'bg-black/80 border-stark-cyan/50 hover:border-stark-cyan/80'
               }`}>
+                {app.id === 'tasks' && activePlan && (
+                  <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-stark-orange shadow-[0_0_6px_#ff5500] animate-pulse z-10" />
+                )}
+                {app.id === 'code' && lastTaskFiles?.files?.length > 0 && (
+                  <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-stark-orange shadow-[0_0_6px_#ff5500] animate-pulse z-10" title={`${lastTaskFiles.files.length} files ready`} />
+                )}
                 {amber ? (
-                  /* Cursor mode icon — small crosshair */
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
                     stroke={isCenter ? '#fbbf24' : 'rgba(251,191,36,0.45)'}
                     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"

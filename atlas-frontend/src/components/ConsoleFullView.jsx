@@ -1,12 +1,141 @@
 import { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFixed }) {
+// ── CommandIntelPanel (inline sub-component) ─────────────────────────────────
+function CommandIntelPanel({ cognitiveData, orchestratorTask, activePlan }) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  if (!orchestratorTask && !activePlan) return null;
+
+  const intentColor = {
+    COMMAND: '#fbbf24',
+    QUERY:   '#00f3ff',
+    MEMORY:  '#a78bfa',
+    IMAGINE: '#34d399',
+    CHAT:    'rgba(255,255,255,0.4)',
+  }[cognitiveData?.intent] ?? 'rgba(255,255,255,0.4)';
+
+  return (
+    <div className="shrink-0 mx-6 mb-3 rounded-xl border border-stark-cyan/15 bg-black/50 overflow-hidden">
+      {/* Collapsed header — always visible */}
+      <button
+        onClick={() => setCollapsed(c => !c)}
+        className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-stark-cyan/5 transition-colors text-left"
+      >
+        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: intentColor }} />
+        <span className="text-[9px] font-mono tracking-[0.3em]" style={{ color: intentColor }}>
+          {cognitiveData?.intent ?? 'PROCESSING'}
+        </span>
+        <span className="text-[9px] text-white/30 font-mono flex-1 truncate">
+          {orchestratorTask || 'Analysing...'}
+        </span>
+        {cognitiveData?.salience != null && (
+          <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded border ${
+            cognitiveData.salience >= 8
+              ? 'border-stark-orange/40 text-stark-orange bg-stark-orange/10'
+              : 'border-stark-cyan/20 text-stark-cyan/50'
+          }`}>
+            SAL {cognitiveData.salience}/10
+          </span>
+        )}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </button>
+
+      {/* Expanded body */}
+      {!collapsed && (
+        <div className="border-t border-stark-cyan/10 px-4 py-3 space-y-3">
+
+          {/* Full task description */}
+          {orchestratorTask && (
+            <div>
+              <div className="text-[8px] tracking-[0.3em] text-stark-cyan/40 mb-1 font-mono">SYNTHESIZED TASK</div>
+              <div className="text-[11px] text-white/70 font-mono leading-relaxed">
+                {orchestratorTask}
+              </div>
+            </div>
+          )}
+
+          {/* Cognitive metadata row */}
+          {cognitiveData && (
+            <div className="flex gap-4 flex-wrap">
+              <div>
+                <div className="text-[8px] tracking-widest text-stark-cyan/30 font-mono">MOOD</div>
+                <div className={`text-[10px] font-mono font-bold ${
+                  cognitiveData.mood === 'positive'   ? 'text-emerald-400' :
+                  cognitiveData.mood === 'frustrated' ? 'text-orange-400' :
+                  cognitiveData.mood === 'panicked'   ? 'text-red-400' :
+                  'text-white/40'
+                }`}>{(cognitiveData.mood ?? 'neutral').toUpperCase()}</div>
+              </div>
+              <div>
+                <div className="text-[8px] tracking-widest text-stark-cyan/30 font-mono">URGENCY</div>
+                <div className={`text-[10px] font-mono font-bold ${
+                  cognitiveData.urgency === 'high' ? 'text-stark-orange' : 'text-white/40'
+                }`}>{(cognitiveData.urgency ?? 'low').toUpperCase()}</div>
+              </div>
+              <div>
+                <div className="text-[8px] tracking-widest text-stark-cyan/30 font-mono">ROUTER</div>
+                <div className="text-[10px] font-mono font-bold" style={{ color: intentColor }}>
+                  {cognitiveData.intent ?? '—'}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Plan steps */}
+          {activePlan?.steps?.length > 0 && (
+            <div>
+              <div className="text-[8px] tracking-[0.3em] text-stark-cyan/40 mb-2 font-mono">
+                EXECUTION PLAN — {activePlan.steps.length} STEPS
+              </div>
+              <div className="space-y-1">
+                {activePlan.steps.map((step, i) => {
+                  const done   = activePlan.completed?.[i];
+                  const active = !done && i === activePlan.activeStep;
+                  return (
+                    <div key={i} className={`flex items-start gap-2.5 pl-2 border-l-2 text-[10px] font-mono py-0.5 ${
+                      done   ? 'border-emerald-400/60 text-emerald-400/70' :
+                      active ? 'border-stark-cyan text-stark-cyan' :
+                               'border-white/10 text-white/25'
+                    }`}>
+                      <span className="shrink-0">
+                        {done ? '✓' : active ? '►' : '○'}
+                      </span>
+                      <span className={active ? 'animate-pulse' : ''}>{step}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main ConsoleFullView ─────────────────────────────────────────────────────
+export default memo(function ConsoleFullView({
+  history, ws, onBack, isOpacityFixed,
+  streamingText, cognitiveData, isInterrupted,
+  activePlan, orchestratorTask,
+  lastTaskFiles, onOpenCode,
+}) {
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
   const sessionId = useMemo(() => Math.floor(Math.random() * 9000 + 1000), []);
+
+  // Track plan completion for auto-collapse awareness
+  const prevPlanRef = useRef(activePlan);
+  useEffect(() => {
+    prevPlanRef.current = activePlan;
+  }, [activePlan]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -14,7 +143,6 @@ export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFix
     }
   }, [history]);
 
-  // Detect when ATLAS is "typing" (last message from ATLAS was very recent)
   useEffect(() => {
     const lastMsg = history[history.length - 1];
     if (lastMsg?.sender === 'TUDOR') {
@@ -67,7 +195,6 @@ export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFix
         </button>
 
         <div className="flex items-center gap-3">
-          {/* Mini orb indicator */}
           <div className="relative w-7 h-7 flex items-center justify-center">
             <div className="absolute w-7 h-7 rounded-full border border-stark-cyan/40 animate-spin" style={{ animationDuration: '8s' }} />
             <div className="w-2.5 h-2.5 rounded-full bg-stark-cyan shadow-[0_0_8px_#00f3ff] animate-pulse" />
@@ -94,6 +221,13 @@ export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFix
         background: 'linear-gradient(90deg, transparent 0%, rgba(0,243,255,0.4) 30%, rgba(0,243,255,0.8) 50%, rgba(0,243,255,0.4) 70%, transparent 100%)',
         boxShadow: '0 0 8px rgba(0,243,255,0.3)'
       }} />
+
+      {/* Command Intel Panel */}
+      <CommandIntelPanel
+        cognitiveData={cognitiveData}
+        orchestratorTask={orchestratorTask}
+        activePlan={activePlan}
+      />
 
       {/* Messages area */}
       <div
@@ -174,7 +308,6 @@ export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFix
                   }`}
                   style={isAtlas ? { background: 'rgba(0,243,255,0.05)' } : { background: 'rgba(255,255,255,0.06)' }}
                   >
-                    {/* Glow line for ATLAS messages */}
                     {isAtlas && (
                       <div className="absolute left-0 top-3 bottom-3 w-px bg-gradient-to-b from-transparent via-stark-cyan/60 to-transparent rounded-full" />
                     )}
@@ -184,6 +317,44 @@ export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFix
               </motion.div>
             );
           })}
+        </AnimatePresence>
+
+        {/* Streaming bubble */}
+        <AnimatePresence>
+          {streamingText && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              className="flex items-end gap-3"
+            >
+              <div className="shrink-0 w-8 h-8 rounded-full border border-stark-cyan/50 bg-stark-cyan/10 flex items-center justify-center">
+                <div className="w-2.5 h-2.5 rounded-full bg-stark-cyan animate-pulse" />
+              </div>
+              <div
+                className="px-5 py-3.5 rounded-2xl rounded-tl-sm border border-stark-cyan/25 max-w-[72%] text-sm font-mono text-stark-cyan/90 relative"
+                style={{ background: 'rgba(0,243,255,0.05)' }}
+              >
+                <div className="absolute left-0 top-3 bottom-3 w-px bg-gradient-to-b from-transparent via-stark-cyan/60 to-transparent rounded-full" />
+                <span className="relative">{streamingText}</span>
+                <span className="inline-block w-1.5 h-3.5 bg-stark-cyan ml-1 animate-pulse align-middle" />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Interrupted banner */}
+        <AnimatePresence>
+          {isInterrupted && (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="flex justify-center"
+            >
+              <div className="px-4 py-1.5 rounded-full border border-stark-orange/30 bg-stark-orange/10">
+                <span className="text-[9px] tracking-[0.25em] text-stark-orange font-mono">⚡ INTERRUPTED</span>
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
 
         {/* Typing indicator */}
@@ -219,10 +390,33 @@ export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFix
       {/* Divider */}
       <div className="shrink-0 h-px mx-6" style={{ background: 'linear-gradient(90deg, transparent, rgba(0,243,255,0.15), transparent)' }} />
 
+      {/* View in Code banner — appears when files were written */}
+      {lastTaskFiles?.files?.length > 0 && (
+        <div className="shrink-0 mx-4 mb-2 flex items-center gap-3 px-4 py-2.5 rounded-lg border border-stark-cyan/25 bg-stark-cyan/5">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00f3ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+          </svg>
+          <div className="flex-1 min-w-0">
+            <div className="text-[9px] text-stark-cyan/50 font-mono tracking-widest">FILES WRITTEN</div>
+            <div className="text-[10px] text-stark-cyan font-mono truncate">
+              {lastTaskFiles.files.join('  ·  ')}
+            </div>
+          </div>
+          <button
+            data-hand-target
+            data-hand-label="VIEW CODE"
+            onClick={() => onOpenCode(lastTaskFiles)}
+            className="shrink-0 px-3 py-1.5 rounded-lg border border-stark-cyan/40 bg-stark-cyan/10 text-stark-cyan text-[9px] font-mono tracking-widest hover:bg-stark-cyan/25 hover:border-stark-cyan transition-all duration-200"
+          >
+            VIEW IN CODE →
+          </button>
+        </div>
+      )}
+
       {/* Input area */}
       <div className="shrink-0 p-4 bg-black/40 backdrop-blur-xl no-drag">
         <div className="flex items-end gap-3 p-3 rounded-2xl border border-stark-cyan/20 bg-black/60 focus-within:border-stark-cyan/50 focus-within:shadow-[0_0_20px_rgba(0,243,255,0.08)] transition-all duration-300">
-          
+
           <div className="flex items-center justify-center w-7 h-7 shrink-0 mb-0.5">
             <div className="w-1.5 h-1.5 rounded-full bg-stark-cyan/40 animate-pulse" />
           </div>
@@ -243,7 +437,6 @@ export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFix
             style={{ scrollbarWidth: 'none' }}
           />
 
-          {/* Char counter */}
           {input.length > 0 && (
             <span className="text-[9px] text-stark-cyan/30 font-mono self-end mb-1 shrink-0">
               {input.length}
@@ -265,7 +458,6 @@ export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFix
           </button>
         </div>
 
-        {/* Bottom hint */}
         <div className="flex justify-between items-center mt-2 px-1">
           <span className="text-[9px] text-white/15 font-mono tracking-wider">ENTER to send · SHIFT+ENTER for newline</span>
           <span className="text-[9px] text-stark-cyan/20 font-mono tracking-wider">ENCRYPTED // AES-256</span>
