@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, memo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Sphere, MeshDistortMaterial } from '@react-three/drei';
 import { motion } from 'framer-motion';
@@ -19,7 +19,7 @@ function HologramSphere({ isSpeaking }) {
       <MeshDistortMaterial
         color="#00f3ff"
         attach="material"
-        distort={isSpeaking ? 0.4 : 0.2} 
+        distort={isSpeaking ? 0.4 : 0.2}
         speed={isSpeaking ? 5 : 2}
         wireframe={true}
         transparent={true}
@@ -29,9 +29,9 @@ function HologramSphere({ isSpeaking }) {
   );
 }
 
-export default function Orb({ isSpeaking }) {
+export default memo(function Orb({ isSpeaking }) {
   return (
-    <motion.div 
+    <motion.div
       whileHover={{ scale: 1.08, filter: "drop-shadow(0 0 25px rgba(0,243,255,1))" }}
       whileTap={{ scale: 0.9, rotate: 15 }}
       transition={{ type: "spring", stiffness: 300, damping: 15 }}
@@ -44,4 +44,4 @@ export default function Orb({ isSpeaking }) {
       </Canvas>
     </motion.div>
   );
-}
+});

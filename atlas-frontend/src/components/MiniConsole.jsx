@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
 import { motion } from 'framer-motion';
 
-export default function MiniConsole({ history, ws }) {
+export default memo(function MiniConsole({ history, ws }) {
   const [input, setInput] = useState('');
   const scrollRef = useRef(null);
 
@@ -60,4 +60,4 @@ export default function MiniConsole({ history, ws }) {
       </div>
     </motion.div>
   );
-}
+});

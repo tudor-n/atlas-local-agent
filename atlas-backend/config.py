@@ -12,7 +12,10 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 WORKER_MAX_STEPS = 8
 BASH_TIMEOUT = 15
-OLLAMA_KEEP_ALIVE = -1
+
+# Legacy constant kept for any code that still references it.
+# New code should use VRAMManager.get_keep_alive(role) instead.
+OLLAMA_KEEP_ALIVE = "5m"
 
 DMN_MIN_IDLE_SECONDS = 120
 DMN_WANDER_INTERVAL_MIN = 120

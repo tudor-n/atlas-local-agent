@@ -9,7 +9,8 @@ from core.brain.limbic.archivist import Archivist
 from core.brain.autonomic.interoception import Interoception
 from core.brain.self.user_model import UserModel
 import re
-from config import BUTLER_MODEL, OLLAMA_KEEP_ALIVE, SHORT_TERM_MEMORY_SIZE
+from config import BUTLER_MODEL, SHORT_TERM_MEMORY_SIZE
+from core.brain.interface.vram_manager import vram
 
 _SYSTEM_PROMPT = (
     "You are ATLAS (ASPIRING THINKING LOCAL ADMINISTRATIVE SYSTEM), an advanced local engineering assistant.\n"
@@ -57,6 +58,9 @@ class LLMEngine:
         self.session_history = []
         self.last_interaction = {"user": "", "atlas": ""}
         self._extract_thread = None
+
+        # Register butler model with VRAM manager
+        vram.register("butler", self.model_name)
 
         self.recall_intent_examples = [
             "do you remember", "can you recall", "what do you know about",
@@ -143,12 +147,13 @@ class LLMEngine:
             "- Output ONLY the greeting text. No quotation marks."
         )
         try:
+            vram.ensure_loaded("butler")
             return ollama.generate(
                 model=self.model_name, prompt=prompt,
-                keep_alive=OLLAMA_KEEP_ALIVE,
+                keep_alive=vram.get_keep_alive("butler"),
                 options={"temperature": 0.85, "num_predict": 35}
             )['response'].strip(' "\'\n')
-        except:
+        except Exception:
             return f"Good {tod.lower()}, Sir."
 
     def generate_goodbye(self) -> str:
@@ -218,11 +223,13 @@ class LLMEngine:
             "- Output ONLY the sign-off text. No quotation marks."
         )
         try:
+            vram.ensure_loaded("butler")
             return ollama.generate(
                 model=self.model_name, prompt=prompt,
+                keep_alive=vram.get_keep_alive("butler"),
                 options={"temperature": 0.85, "num_predict": 30}
             )['response'].strip(' "\'\n')
-        except:
+        except Exception:
             return "Good night, Sir. I'll be here."
 
     def _is_recall_intent(self, user_input: str, threshold: float = 0.40) -> bool:
@@ -265,9 +272,10 @@ class LLMEngine:
             "[TASK SPECIFICATION]:"
         )
         try:
+            vram.ensure_loaded("butler")
             response = ollama.generate(
                 model=self.model_name, prompt=prompt,
-                keep_alive=OLLAMA_KEEP_ALIVE,
+                keep_alive=vram.get_keep_alive("butler"),
                 options={"temperature": 0.0, "top_p": 0.05, "num_predict": 120}
             )['response'].strip()
             cleaned = re.sub(r'^(here is|here\'s|the rewritten task[:\s]*|task specification[:\s]*)', '', response, flags=re.IGNORECASE).strip(' "\'`\n')
@@ -276,11 +284,12 @@ class LLMEngine:
             if len(cleaned) < 10:
                 return user_input
             return cleaned
-        except:
+        except Exception:
             return user_input
 
     def _extract_facts_bg(self, user_input: str):
         input_lower = user_input.lower()
+        _ka = vram.get_keep_alive("butler")
 
         if "when i say" in input_lower and any(x in input_lower for x in ["respond with", "reply with"]):
             try:
@@ -292,13 +301,14 @@ class LLMEngine:
                 )
                 extraction = ollama.generate(
                     model=self.model_name, prompt=prompt,
+                    keep_alive=_ka,
                     options={"temperature": 0.0, "num_predict": 60}
                 )['response'].strip()
                 if "|" in extraction:
                     trigger, response = extraction.split("|", 1)
                     self.bus.publish("learn_new_habit", {"trigger": trigger.strip(), "response": response.strip()})
                     return
-            except:
+            except Exception:
                 pass
 
         explicit_triggers = ["remember that ", "save that ", "memorize that ", "record that ", "note that "]
@@ -318,6 +328,7 @@ class LLMEngine:
                 )
                 fact_to_forget = ollama.generate(
                     model=self.model_name, prompt=prompt,
+                    keep_alive=_ka,
                     options={"temperature": 0.0, "num_predict": 40}
                 )['response'].strip(' "\'')
                 if "none" not in fact_to_forget.lower() and len(fact_to_forget) > 3:
@@ -326,7 +337,7 @@ class LLMEngine:
                     else:
                         print(Fore.RED + f" [MEMORY] Not found to erase: {fact_to_forget[:60]}")
                 return
-            except:
+            except Exception:
                 pass
 
         implicit_triggers = ["my ", "i am", "i like", "i prefer", "i'm", "i've", "i plan to", "i will", "i decided", "i use"]
@@ -345,6 +356,7 @@ class LLMEngine:
                 )
                 fact = ollama.generate(
                     model=self.model_name, prompt=prompt,
+                    keep_alive=_ka,
                     options={"temperature": 0.0, "num_predict": 50}
                 )['response'].strip(' "\'')
                 if "none" not in fact.lower() and 5 < len(fact) < 150:
@@ -447,12 +459,13 @@ class LLMEngine:
                 )
             })
 
+        vram.ensure_loaded("butler")
         full_response = ""
         for chunk in ollama.chat(
             model=self.model_name,
             messages=messages,
             stream=True,
-            keep_alive=OLLAMA_KEEP_ALIVE,
+            keep_alive=vram.get_keep_alive("butler"),
             options={"temperature": 0.6, "top_p": 0.9, "repeat_penalty": 1.15}
         ):
             full_response += chunk['message']['content']
@@ -460,6 +473,8 @@ class LLMEngine:
 
         self.short_term_memory.extend([f"User: {user_input}", f"ATLAS: {full_response}"])
         self.session_history.extend([f"User: {user_input}", f"ATLAS: {full_response}"])
+        if len(self.session_history) > 200:
+            self.session_history = self.session_history[-200:]
         self.last_interaction = {"user": user_input, "atlas": full_response}
 
         if self._extract_thread is None or not self._extract_thread.is_alive():

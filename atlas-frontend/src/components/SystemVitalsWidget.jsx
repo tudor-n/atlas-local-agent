@@ -1,4 +1,6 @@
-export default function SystemVitalsWidget({ isOpacityFixed, compact, vitals }) {
+import { memo } from 'react';
+
+export default memo(function SystemVitalsWidget({ isOpacityFixed, compact, vitals }) {
   const cpu = vitals?.cpu || 12;
   const mem = vitals?.mem || 45;
   const gpu = vitals?.gpu_temp || 68;
@@ -46,4 +48,4 @@ export default function SystemVitalsWidget({ isOpacityFixed, compact, vitals }) 
 
     </div>
   );
-}
+});

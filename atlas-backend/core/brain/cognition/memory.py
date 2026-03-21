@@ -7,11 +7,18 @@ from config import MEMORY_DB_PATH
 class MemorySystem:
     def __init__(self, db_path=MEMORY_DB_PATH):
         self.client = chromadb.PersistentClient(path=db_path)
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        self._embedder = None   # lazy-loaded to avoid VRAM hit at import time
         self.collection = self.client.get_or_create_collection(
             name="atlas_long_term",
             metadata={"hnsw:space": "cosine"}
         )
+
+    @property
+    def embedder(self):
+        if self._embedder is None:
+            print("[MEMORY] Loading SentenceTransformer (first use)...")
+            self._embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        return self._embedder
 
     def save_memory(self, text: str, importance: float = 5.0, tags: list = None) -> bool:
         if self.collection.count() > 0 and self.recall(text, n_results=1, similarity_threshold=0.25):

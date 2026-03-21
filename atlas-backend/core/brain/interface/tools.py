@@ -4,6 +4,7 @@ import subprocess
 from colorama import Fore
 import docker
 from config import SANDBOX_PATH, ARCHITECT_LOCAL_MODEL, BASH_TIMEOUT, OLLAMA_KEEP_ALIVE, DOCKER_IMAGE, CONTAINER_NAME
+from core.brain.interface.vram_manager import vram
 
 try:
     docker_client = docker.from_env()
@@ -252,6 +253,10 @@ INSTRUCTIONS: Output ONLY ONE XML tool block at a time. No markdown. No commenta
     def _ask_local_architect(self, prompt: str) -> str:
         import ollama
         print(Fore.MAGENTA + " [LOCAL ARCHITECT] Generating...")
+
+        # Register if not yet registered (lazy — architect is rarely called)
+        vram.register("architect", ARCHITECT_LOCAL_MODEL)
+
         arch_prompt = (
             "You are an expert Senior Software Engineer. Output ONLY raw code.\n"
             "No explanations. No markdown fences. No pleasantries.\n"
@@ -259,12 +264,20 @@ INSTRUCTIONS: Output ONLY ONE XML tool block at a time. No markdown. No commenta
             f"REQUEST: {prompt}\n"
         )
         try:
-            code = ollama.generate(model=ARCHITECT_LOCAL_MODEL, prompt=arch_prompt, keep_alive=OLLAMA_KEEP_ALIVE)['response'].strip()
+            vram.ensure_loaded("architect")
+            code = ollama.generate(
+                model=ARCHITECT_LOCAL_MODEL, prompt=arch_prompt,
+                keep_alive=vram.get_keep_alive("architect"),
+            )['response'].strip()
+            # Immediately release the heavy model so the butler can reload
+            vram.release("architect")
+
             refusals = ["I'm sorry", "I cannot", "I apologize", "As an AI"]
             if any(code.startswith(r) for r in refusals):
                 return "[ERROR] Architect refused. Rephrase as a pure code request."
             return f"[SUCCESS] Architect code:\n{code}\n\n[REMINDER] Use write_file to save this to disk."
         except Exception as e:
+            vram.release("architect")
             return f"[ERROR] Local Architect failed: {e}"
 
     def _ask_cloud_architect(self, prompt: str) -> str:

@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export default function ConsoleFullView({ history, ws, onBack, isOpacityFixed }) {
+export default memo(function ConsoleFullView({ history, ws, onBack, isOpacityFixed }) {
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+  const sessionId = useMemo(() => Math.floor(Math.random() * 9000 + 1000), []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -83,7 +84,7 @@ export default function ConsoleFullView({ history, ws, onBack, isOpacityFixed })
             <span className="text-[9px] tracking-[0.2em] text-emerald-400 font-mono">ONLINE</span>
           </div>
           <div className="text-[9px] tracking-[0.2em] text-stark-cyan/30 font-mono border border-stark-cyan/10 px-2 py-1 rounded">
-            SESSION-{Math.floor(Math.random() * 9000 + 1000)}
+            SESSION-{sessionId}
           </div>
         </div>
       </div>
@@ -273,4 +274,4 @@ export default function ConsoleFullView({ history, ws, onBack, isOpacityFixed })
       </div>
     </motion.div>
   );
-}
+});

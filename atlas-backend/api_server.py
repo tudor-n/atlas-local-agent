@@ -47,8 +47,8 @@ app.add_middleware(
 # Shared State
 # ---------------------------------------------------------------------------
 
-connected_clients: list[WebSocket] = []
-atlas_busy        = threading.Lock()
+connected_clients: set[WebSocket] = set()
+atlas_busy        = threading.Event()        # set = busy, clear = idle
 last_intent       = "CHAT"
 _pool             = ThreadPoolExecutor(max_workers=3)
 _ACKS             = [
@@ -79,7 +79,7 @@ user_model = UserModel()
 executive  = Executive(bus)
 motor      = MotorCortex()
 worker     = WorkerNode()
-worker.warmup()
+# worker.warmup() removed — model loads on-demand via VRAMManager on first COMMAND
 _main_loop = None
 
 # Voice I/O (CUDA → CPU fallback handled inside each class)
@@ -93,28 +93,28 @@ ear   = Ear(device="cuda")
 async def broadcast_event(event_type: str, data: dict):
     """Send a JSON event to every connected frontend client."""
     message = json.dumps({"type": event_type, "payload": data})
-    dead = []
-    for client in connected_clients:
+    for client in list(connected_clients):       # snapshot for thread safety
         try:
             await client.send_text(message)
         except Exception:
-            dead.append(client)
-    for d in dead:
-        connected_clients.remove(d)
+            connected_clients.discard(client)
 
 @app.on_event("startup")
 async def startup_event():
     global _main_loop
-    _main_loop = asyncio.get_running_loop() # Capture the loop on startup
-    
+    _main_loop = asyncio.get_running_loop()
+
     asyncio.create_task(system_vitals_broadcaster())
-    greeting = brain.generate_greeting()
+    asyncio.create_task(_async_greeting())
+
+
+async def _async_greeting():
+    """Generate the startup greeting off the event loop so it doesn't block."""
+    loop = asyncio.get_running_loop()
+    greeting = await loop.run_in_executor(None, brain.generate_greeting)
     print(f"[ATLAS CORE]: {greeting}")
-    _main_loop.call_later(
-        1.0, lambda: asyncio.create_task(
-            broadcast_event("atlas_speak", {"text": greeting, "mode": "greeting"})
-        )
-    )
+    await asyncio.sleep(1.0)
+    await broadcast_event("atlas_speak", {"text": greeting, "mode": "greeting"})
 
 
 def emit(event_type: str, data: dict):
@@ -143,7 +143,12 @@ def run_cognition(user_input: str):
     """
     global last_intent
 
-    with atlas_busy:
+    if atlas_busy.is_set():
+        emit("atlas_speak", {"text": "One moment, Sir. I'm still processing your previous request.", "mode": "busy"})
+        return
+
+    atlas_busy.set()
+    try:
         # --- 1. Reflex / Habit Check ------------------------------------------
         habit_response = habits.check_trigger(user_input)
         stop_event = threading.Event()
@@ -267,6 +272,8 @@ def run_cognition(user_input: str):
             emit("atlas_speak", {"text": full_response.strip(), "mode": "response"})
 
         ear.set_interrupt_target(None)
+    finally:
+        atlas_busy.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -275,26 +282,29 @@ def run_cognition(user_input: str):
 
 def handle_proactive(text: str):
     """Fires when ATLAS thinks of something unprompted."""
-    if atlas_busy.acquire(blocking=False):
-        try:
-            brain.session_history.append(f"ATLAS: {text}")
-            emit("atlas_speak", {"text": text, "mode": "proactive"})
+    if atlas_busy.is_set():
+        return                          # cognition in progress — skip proactive thought
 
-            stop_event = threading.Event()
-            ear.set_interrupt_target(stop_event)
-            t = threading.Thread(
-                target=mouth.speak, args=(text, VOICE_BLEND, stop_event), daemon=True
-            )
-            t.start()
-            while t.is_alive():
-                if stop_event.is_set():
-                    break
-                time.sleep(0.05)
-        except Exception as e:
-            print(f"[CRITICAL ERROR] Proactive Thread Crashed: {e}")
-        finally:
-            ear.set_interrupt_target(None)
-            atlas_busy.release()
+    atlas_busy.set()
+    try:
+        brain.session_history.append(f"ATLAS: {text}")
+        emit("atlas_speak", {"text": text, "mode": "proactive"})
+
+        stop_event = threading.Event()
+        ear.set_interrupt_target(stop_event)
+        t = threading.Thread(
+            target=mouth.speak, args=(text, VOICE_BLEND, stop_event), daemon=True
+        )
+        t.start()
+        while t.is_alive():
+            if stop_event.is_set():
+                break
+            time.sleep(0.05)
+    except Exception as e:
+        print(f"[CRITICAL ERROR] Proactive Thread Crashed: {e}")
+    finally:
+        ear.set_interrupt_target(None)
+        atlas_busy.clear()
 
 
 def handle_task_due(task: dict):
@@ -342,18 +352,34 @@ threading.Thread(target=vad_listener_loop, daemon=True).start()
 # System Vitals Streamer
 # ---------------------------------------------------------------------------
 
+_gpu_temp_cache = {"value": 0.0, "ts": 0}
+
+def _read_gpu_temp():
+    """Read NVIDIA GPU temperature via nvidia-smi (cached for 10s)."""
+    now = time.time()
+    if now - _gpu_temp_cache["ts"] < 10:
+        return _gpu_temp_cache["value"]
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=3,
+        )
+        temp = float(result.stdout.strip())
+        _gpu_temp_cache.update(value=temp, ts=now)
+        return temp
+    except Exception:
+        return _gpu_temp_cache["value"]
+
+
 async def system_vitals_broadcaster():
     while True:
         if connected_clients:
             cpu = psutil.cpu_percent()
             mem = psutil.virtual_memory().percent
-            try:
-                temps   = psutil.sensors_temperatures()
-                gpu_temp = temps.get("coretemp", [[None, 45.0]])[0][1]
-            except Exception:
-                gpu_temp = 45.0
+            gpu_temp = _read_gpu_temp()
             await broadcast_event("system_vitals", {"cpu": cpu, "mem": mem, "gpu_temp": gpu_temp})
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
 
 # ---------------------------------------------------------------------------
 # FastAPI Lifecycle & WebSocket Endpoint
@@ -388,7 +414,7 @@ async def shutdown_event():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    connected_clients.append(websocket)
+    connected_clients.add(websocket)
     print("[GUI] Connection Established.")
 
     try:
@@ -408,8 +434,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 threading.Thread(target=run_cognition, args=(user_text,), daemon=True).start()
 
     except WebSocketDisconnect:
-        if websocket in connected_clients:
-            connected_clients.remove(websocket)
+        connected_clients.discard(websocket)
         print("[GUI] UI Client Disconnected.")
 
 # ---------------------------------------------------------------------------

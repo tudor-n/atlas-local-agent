@@ -10,7 +10,7 @@
 //
 // Search "HAND TRACKING" to find every related change.
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Orb from './components/Orb';
 import MiniConsole from './components/MiniConsole';
@@ -23,7 +23,11 @@ import ConsoleFullView from './components/ConsoleFullView';
 import { useHandTracking } from './hooks/useHandTracking';
 import HandCursor from './components/HandCursor';
 
-const APPS = ['settings', 'weather', 'console', 'code', 'models'];
+// WEBSOCKET
+import { useAtlasSocket } from './hooks/useAtlasSocket';
+
+const APPS = ['settings', 'weather', 'console', 'code', 'models', 'cursor'];
+const MAX_HISTORY = 200;
 
 function App() {
   const [appState,       setAppState]       = useState('widget');
@@ -35,13 +39,14 @@ function App() {
   const [history,        setHistory]        = useState([{ sender: 'SYSTEM', text: 'ATLAS CORE ONLINE' }]);
   const [vitals,         setVitals]         = useState({ cpu: 12, mem: 45, gpu_temp: 68 });
 
-  const [ws, setWs] = useState(null);
   const speakingTimeoutRef = useRef(null);
 
   // HAND TRACKING: cooldown so rapid swipe doesn't multi-fire
   const swipeCooldown  = useRef(false);
   // HAND TRACKING: track previous swipeDir so we only fire on the rising edge
   const prevSwipeDir   = useRef(null);
+  const [trackingMode,    setTrackingMode]    = useState('swipe');
+  const [handTrackingOn,  setHandTrackingOn]  = useState(false);
 
   // HAND TRACKING: hook (webcam only active in fullscreen hub)
   const {
@@ -51,23 +56,23 @@ function App() {
     swipeDir,
     isTracking,
     gesture,
+    isPinching,
+    pinchClick,
     isReady,
-  } = useHandTracking({ enabled: isFullscreen && !openedApp });
+  } = useHandTracking({ enabled: isFullscreen && !openedApp && handTrackingOn, mode: trackingMode });
 
-  // HAND TRACKING: carousel rotation on rising edge of swipeDir
+  // HAND TRACKING: carousel advance on swipe (any direction = next)
   useEffect(() => {
     if (!isFullscreen || openedApp) return;
     if (!swipeDir || swipeDir === prevSwipeDir.current) return;
     if (swipeCooldown.current) return;
 
-    prevSwipeDir.current = swipeDir;
+    prevSwipeDir.current  = swipeDir;
     swipeCooldown.current = true;
 
     setSelectedModule(prev => {
       const i = APPS.indexOf(prev);
-      return swipeDir === 'right'
-        ? APPS[(i - 1 + APPS.length) % APPS.length]
-        : APPS[(i + 1) % APPS.length];
+      return APPS[(i + 1) % APPS.length];
     });
 
     setTimeout(() => {
@@ -76,6 +81,20 @@ function App() {
     }, 700);
   }, [swipeDir, isFullscreen, openedApp]);
 
+  // HAND TRACKING: pinch handler — swipe mode opens app, mouse mode handled via DOM
+  const OPENABLE_APPS = ['console']; // extend this as you build out other full views
+
+  useEffect(() => {
+    if (pinchClick === 0) return;
+    if (trackingMode === 'swipe' && isFullscreen && !openedApp) {
+      if (selectedModule === 'cursor') {
+        setTrackingMode('mouse');
+      } else if (OPENABLE_APPS.includes(selectedModule)) {
+        setOpenedApp(selectedModule);
+      }
+    }
+  }, [pinchClick]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.setMode(appState);
@@ -83,33 +102,38 @@ function App() {
     }
   }, [appState]);
 
-  useEffect(() => {
-    const socket = new WebSocket('ws://localhost:8000/ws');
-    setWs(socket);
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'user_speak') {
-        setHistory(prev => [...prev, { sender: 'TUDOR', text: data.payload.text }]);
-      } else if (data.type === 'atlas_speak') {
-        setHistory(prev => [...prev, { sender: 'ATLAS', text: data.payload.text }]);
-        setAtlasMessage(data.payload.text);
-        if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
-        speakingTimeoutRef.current = setTimeout(
-          () => setAtlasMessage(''),
-          3000 + data.payload.text.length * 50
-        );
-      } else if (data.type === 'system_vitals') {
-        setVitals({
-          cpu:      Math.round(data.payload.cpu),
-          mem:      Math.round(data.payload.mem),
-          gpu_temp: Math.round(data.payload.gpu_temp),
-        });
-      } else if (data.type === 'switch_app') {
-        setSelectedModule(data.payload.app);
-      }
-    };
-    return () => socket.close();
+  // WebSocket message handler (stable ref via useCallback)
+  const handleWsMessage = useCallback((event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === 'user_speak') {
+      setHistory(prev => { const next = [...prev, { sender: 'TUDOR', text: data.payload.text }]; return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next; });
+    } else if (data.type === 'atlas_speak') {
+      setHistory(prev => { const next = [...prev, { sender: 'ATLAS', text: data.payload.text }]; return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next; });
+      setAtlasMessage(data.payload.text);
+      if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
+      speakingTimeoutRef.current = setTimeout(
+        () => setAtlasMessage(''),
+        3000 + data.payload.text.length * 50
+      );
+    } else if (data.type === 'system_vitals') {
+      setVitals({
+        cpu:      Math.round(data.payload.cpu),
+        mem:      Math.round(data.payload.mem),
+        gpu_temp: Math.round(data.payload.gpu_temp),
+      });
+    } else if (data.type === 'switch_app') {
+      setSelectedModule(data.payload.app);
+    }
   }, []);
+
+  const { ws: wsRef, connected } = useAtlasSocket({ onMessage: handleWsMessage });
+
+  // Stable callbacks for memoized children
+  const handleAppOpen = useCallback((id) => {
+    if (id === 'cursor') setTrackingMode('mouse');
+    else setOpenedApp(id);
+  }, []);
+  const handleConsoleBack = useCallback(() => setOpenedApp(null), []);
 
   const componentOpacityClass = `transition-opacity duration-500 ${isOpacityFixed ? 'opacity-100' : 'opacity-40 hover:opacity-100'}`;
   const minimizedOpacityClass = `transition-opacity duration-500 ${isOpacityFixed ? 'opacity-100' : 'opacity-30 group-hover:opacity-100'}`;
@@ -156,8 +180,8 @@ function App() {
   // ─── Hub / app shell ──────────────────────────────────────────────────────────
   return (
     <>
-      {/* HAND TRACKING: cursor overlay — fullscreen hub only */}
-      {isFullscreen && !openedApp && (
+      {/* HAND TRACKING: cursor overlay — fullscreen hub, only when enabled */}
+      {isFullscreen && !openedApp && handTrackingOn && (
         <HandCursor
           cursor={cursor}
           dwellProgress={dwellProgress}
@@ -165,7 +189,9 @@ function App() {
           swipeDir={swipeDir}
           isTracking={isTracking}
           gesture={gesture}
+          isPinching={isPinching}
           isReady={isReady}
+          mode={trackingMode}
         />
       )}
 
@@ -179,13 +205,69 @@ function App() {
         }`}>
 
           {/* ── Title bar ── */}
-          <div className={`w-full h-12 flex items-center justify-between border-b border-stark-cyan/10 px-6 drag-region transition-colors duration-500 shrink-0 ${
+          <div className={`w-full h-12 relative flex items-center justify-between border-b border-stark-cyan/10 px-6 transition-colors duration-500 shrink-0 ${
             isFullscreen ? 'bg-black/80' : (isOpacityFixed ? 'bg-black/40' : 'bg-transparent group-hover:bg-black/40')
           }`}>
-            <span className="text-[10px] tracking-[0.4em] text-stark-cyan font-bold">
+            {/* Drag overlay only in windowed mode — fullscreen doesn't need it and drag-region overrides OS cursor */}
+            {!isFullscreen && <div className="drag-region absolute inset-0 z-0" />}
+            <span className="no-drag relative z-10 text-[10px] tracking-[0.4em] text-stark-cyan font-bold">
               A.T.L.A.S. // {openedApp ? openedApp.toUpperCase() : (isFullscreen ? 'PRIMARY HUB' : 'MINIMIZED HUB')}
             </span>
-            <div className="flex gap-5 no-drag items-center">
+            <div className="no-drag relative z-10 flex gap-5 items-center">
+
+              {isFullscreen && !openedApp && (
+                <>
+                  {/* Hand tracking on/off */}
+                  <button
+                    onClick={() => setHandTrackingOn(v => !v)}
+                    className={`transition-colors flex items-center gap-1.5 px-2 py-0.5 rounded border text-[9px] font-mono tracking-widest
+                      ${handTrackingOn
+                        ? 'border-stark-cyan/50 text-stark-cyan bg-stark-cyan/10 hover:bg-stark-cyan/20'
+                        : 'border-white/20 text-white/30 bg-white/5 hover:bg-white/10 hover:text-white/60'
+                      }`}
+                    title={handTrackingOn ? 'Hand tracking ON — click to disable' : 'Hand tracking OFF — click to enable'}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 4h1a3 3 0 0 1 3 3 3 3 0 0 1 3-3h1M9 20H7a4 4 0 0 1-4-4V9.5a2.5 2.5 0 0 1 5 0V12a2 2 0 0 0 2 2 2 2 0 0 0 2-2v-1.5a2.5 2.5 0 0 1 5 0V19"/>
+                    </svg>
+                    {handTrackingOn ? 'HAND ON' : 'HAND OFF'}
+                  </button>
+                  <div className="w-px h-4 bg-stark-cyan/20 mx-1" />
+                  {/* Mode toggle — only shown when tracking is active */}
+                  {handTrackingOn && (
+                    <>
+                      <button
+                        data-hand-target
+                        data-hand-label={trackingMode === 'swipe' ? 'MOUSE MODE' : 'SWIPE MODE'}
+                        onClick={() => setTrackingMode(m => m === 'swipe' ? 'mouse' : 'swipe')}
+                        className={`transition-colors flex items-center gap-1.5 px-2 py-0.5 rounded border text-[9px] font-mono tracking-widest
+                          ${trackingMode === 'swipe'
+                            ? 'border-amber-400/50 text-amber-400 bg-amber-400/10 hover:bg-amber-400/20'
+                            : 'border-stark-cyan/50 text-stark-cyan bg-stark-cyan/10 hover:bg-stark-cyan/20'
+                          }`}
+                        title={`Hand tracking: ${trackingMode} mode — click to switch`}
+                      >
+                        {trackingMode === 'swipe' ? (
+                          <>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>
+                            </svg>
+                            SWIPE
+                          </>
+                        ) : (
+                          <>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M5 4h1a3 3 0 0 1 3 3 3 3 0 0 1 3-3h1M9 20H7a4 4 0 0 1-4-4V9.5a2.5 2.5 0 0 1 5 0V12a2 2 0 0 0 2 2 2 2 0 0 0 2-2v-1.5a2.5 2.5 0 0 1 5 0V19"/>
+                            </svg>
+                            MOUSE
+                          </>
+                        )}
+                      </button>
+                      <div className="w-px h-4 bg-stark-cyan/20 mx-1" />
+                    </>
+                  )}
+                </>
+              )}
 
               <button data-hand-target data-hand-label="OPACITY"
                 onClick={() => setIsOpacityFixed(!isOpacityFixed)}
@@ -239,18 +321,18 @@ function App() {
           <AnimatePresence mode="wait">
             {openedApp === 'console' ? (
               <motion.div key="console-full" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} transition={{ duration:0.2 }} className="flex-1 min-h-0 overflow-hidden">
-                <ConsoleFullView history={history} ws={ws} onBack={() => setOpenedApp(null)} isOpacityFixed={isOpacityFixed} />
+                <ConsoleFullView history={history} ws={wsRef.current} onBack={handleConsoleBack} isOpacityFixed={isOpacityFixed} />
               </motion.div>
             ) : (
               <motion.div key="hub" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} transition={{ duration:0.2 }} className="flex-1 min-h-0 flex flex-col overflow-hidden">
 
                 {isFullscreen ? (
                   <div className="flex-1 w-full flex flex-row p-8 gap-8 no-drag relative overflow-hidden">
-                    <div className={`w-[360px] h-full z-10 shrink-0 ${componentOpacityClass}`}>
+                    <div data-hand-component className={`w-[360px] h-full z-10 shrink-0 ${componentOpacityClass}`}>
                       <WeatherTimeWidget isOpacityFixed={isOpacityFixed} />
                     </div>
                     <div className="flex-1 m-auto flex flex-col items-center justify-center pointer-events-none min-h-0 z-20">
-                      <div className={`flex flex-col items-center mb-6 pointer-events-auto ${componentOpacityClass}`}>
+                      <div data-hand-component className={`flex flex-col items-center mb-6 pointer-events-auto ${componentOpacityClass}`}>
                         <h1 className="glitch-text text-7xl font-bold tracking-[0.5em] mb-2" data-text="A.T.L.A.S.">A.T.L.A.S.</h1>
                         <h2 className="glitch-text text-xs tracking-[0.6em] text-stark-cyan/80 font-bold" data-text="BLACKWELL JV2.0 ARCH">BLACKWELL JV2.0 ARCH</h2>
                       </div>
@@ -259,10 +341,10 @@ function App() {
                           <Orb isSpeaking={!!atlasMessage} />
                         </div>
                         <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
-                          <AppCarousel activeApp={selectedModule} setActiveApp={setSelectedModule} onAppOpen={(id) => setOpenedApp(id)} isOpacityFixed={isOpacityFixed} isFullscreen={isFullscreen} />
+                          <AppCarousel activeApp={selectedModule} setActiveApp={setSelectedModule} onAppOpen={handleAppOpen} isOpacityFixed={isOpacityFixed} isFullscreen={isFullscreen} />
                         </div>
                       </div>
-                      <div className={`mt-6 flex gap-5 px-8 py-3 bg-black/60 border border-stark-cyan/20 rounded-full backdrop-blur-md pointer-events-auto shrink-0 ${componentOpacityClass}`}>
+                      <div data-hand-component className={`mt-6 flex gap-5 px-8 py-3 bg-black/60 border border-stark-cyan/20 rounded-full backdrop-blur-md pointer-events-auto shrink-0 ${componentOpacityClass}`}>
                         <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24] animate-pulse"/><span className="text-[10px] text-[#fbbf24] tracking-[0.2em] font-mono">ACTIVE: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">2</span></span></div>
                         <div className="w-px h-3.5 bg-white/20 self-center"/>
                         <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-[#f97316] shadow-[0_0_5px_#f97316]"/><span className="text-[10px] text-[#f97316] tracking-[0.2em] font-mono">QUEUED: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">5</span></span></div>
@@ -272,9 +354,9 @@ function App() {
                         <div className="flex items-center gap-2.5"><div className="w-2 h-2 rounded-full bg-stark-cyan shadow-[0_0_5px_#00f3ff]"/><span className="text-[10px] text-stark-cyan tracking-[0.2em] font-mono">AGENTS: <span className="text-white font-bold drop-shadow-[0_0_2px_#fff]">4</span></span></div>
                       </div>
                     </div>
-                    <div className={`ml-auto w-[360px] h-full z-10 shrink-0 ${componentOpacityClass}`}>
+                    <div data-hand-component className={`ml-auto w-[360px] h-full z-10 shrink-0 ${componentOpacityClass}`}>
                       <div className="w-full h-full glass-panel rounded-2xl border border-stark-cyan/20 bg-black/40 overflow-hidden">
-                        <MiniConsole history={history} ws={ws} />
+                        <MiniConsole history={history} ws={wsRef.current} />
                       </div>
                     </div>
                   </div>
@@ -288,7 +370,7 @@ function App() {
                       </div>
                     </div>
                     <div className={`flex-1 w-full min-h-0 glass-panel rounded-xl border border-stark-cyan/20 bg-black/40 overflow-hidden ${minimizedOpacityClass}`}>
-                      <MiniConsole history={history} ws={ws} />
+                      <MiniConsole history={history} ws={wsRef.current} />
                     </div>
                     <div className={`w-full flex justify-between px-4 py-2.5 bg-black/60 border border-stark-cyan/20 rounded-xl backdrop-blur-md pointer-events-auto shrink-0 ${minimizedOpacityClass}`}>
                       <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-[#fbbf24] shadow-[0_0_5px_#fbbf24] animate-pulse"/><span className="text-[8px] text-[#fbbf24] tracking-[0.1em] font-mono">ACTIVE:<span className="text-white font-bold drop-shadow-[0_0_2px_#fff] ml-1">2</span></span></div>
@@ -303,7 +385,7 @@ function App() {
                 )}
 
                 <div className={`w-full p-4 pt-0 no-drag shrink-0 ${isFullscreen ? 'p-6' : ''}`}>
-                  <div className={componentOpacityClass}>
+                  <div data-hand-component className={componentOpacityClass}>
                     <SystemVitalsWidget isOpacityFixed={isOpacityFixed} compact={!isFullscreen} vitals={vitals} />
                   </div>
                 </div>

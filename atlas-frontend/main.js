@@ -90,4 +90,8 @@ ipcMain.on('toggle-fullscreen', (event) => {
   }
 });
 
+ipcMain.on('minimize-app', () => {
+  if (mainWindow) mainWindow.minimize();
+});
+
 ipcMain.on('close-app', () => app.quit());

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, memo } from 'react';
 
-export default function WeatherTimeWidget({ isOpacityFixed }) {
+export default memo(function WeatherTimeWidget({ isOpacityFixed }) {
   const [time, setTime] = useState(new Date());
 
   useEffect(() => {
@@ -31,4 +31,4 @@ export default function WeatherTimeWidget({ isOpacityFixed }) {
       </div>
     </div>
   );
-}
+});

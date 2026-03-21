@@ -2,7 +2,8 @@ import re
 import ollama
 from colorama import Fore
 from core.brain.interface.tools import ToolRegistry
-from config import WORKER_MODEL, WORKER_MAX_STEPS, OLLAMA_KEEP_ALIVE
+from config import WORKER_MODEL, WORKER_MAX_STEPS
+from core.brain.interface.vram_manager import vram
 
 
 
@@ -10,6 +11,7 @@ class WorkerNode:
     def __init__(self, model_name=WORKER_MODEL):
         self.model_name = model_name
         self.tools = ToolRegistry()
+        vram.register("worker", self.model_name)
         self.system_prompt = (
             "You are ATLAS's internal autonomous operator. Execute tasks by outputting XML tool calls.\n\n"
             f"{self.tools.tool_schema}\n\n"
@@ -42,6 +44,7 @@ class WorkerNode:
 
     def execute_task(self, user_task: str, context: str = "") -> str:
         print(Fore.LIGHTBLACK_EX + f" [WORKER] Starting: '{user_task[:80]}'")
+        vram.ensure_loaded("worker")
         task_content = f"Task: {user_task}"
         if context:
             task_content += f"\n\n[CONTEXT FROM PREVIOUS STEP]:\n{context}"
@@ -59,7 +62,7 @@ class WorkerNode:
                 response = ollama.chat(
                     model=self.model_name,
                     messages=messages,
-                    keep_alive=OLLAMA_KEEP_ALIVE,
+                    keep_alive=vram.get_keep_alive("worker"),
                     options={"temperature": 0.0, "top_p": 0.05, "num_predict": 1200}
                 )
                 xml_call = self._strip_markdown(response['message']['content'])
@@ -157,7 +160,7 @@ class WorkerNode:
     def warmup(self):
         print(Fore.LIGHTBLACK_EX + f" [WORKER] Warming up ({self.model_name})...")
         try:
-            ollama.generate(model=self.model_name, prompt=".", keep_alive=OLLAMA_KEEP_ALIVE, options={"num_predict": 1})
+            vram.ensure_loaded("worker")
         except Exception as e:
             print(Fore.RED + f" [WORKER] Warmup failed: {e}")
 def extract_tool_call(llm_output: str) -> dict:

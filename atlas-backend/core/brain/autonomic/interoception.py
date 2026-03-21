@@ -6,7 +6,7 @@ class Interoception:
 
     def get_vitals(self) -> dict:
         vitals = {
-            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "cpu_percent": psutil.cpu_percent(interval=None),
             "ram_percent": psutil.virtual_memory().percent,
             "disk_percent": psutil.disk_usage('/').percent
         }
