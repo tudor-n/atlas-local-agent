@@ -8,6 +8,7 @@ from core.brain.autonomic.chronometer import Chronometer
 from core.brain.limbic.archivist import Archivist
 from core.brain.autonomic.interoception import Interoception
 from core.brain.self.user_model import UserModel
+import re
 from config import BUTLER_MODEL, OLLAMA_KEEP_ALIVE, SHORT_TERM_MEMORY_SIZE
 
 _SYSTEM_PROMPT = (
@@ -67,45 +68,162 @@ class LLMEngine:
     def generate_greeting(self) -> str:
         from datetime import datetime
         hour = datetime.now().hour
-        if 5 <= hour < 12: tod = "Morning"
-        elif 12 <= hour < 17: tod = "Afternoon"
-        elif 17 <= hour < 22: tod = "Evening"
-        else: tod = "Late Night"
+
+        if hour < 5:
+            tod = "Late Night"
+            situation = "It is past midnight. Tudor is awake and working."
+            examples = [
+    "Still at it, Sir? You're going to regret this in about six hours.",
+    "Good to see you, Sir. The rest of the world clocked out some time ago.",
+    "Working late again, Sir? You will feel it in the morning, I'm afraid."
+]
+
+        elif 5 <= hour < 11:
+            tod = "Morning"
+            situation = "It is morning. Tudor is starting his day early."
+            examples = [
+    "Good morning, Sir. Getting in the workshop early today?",
+    "Good morning, Sir. Up before noon — I'll mark it in the calendar.",
+    "Good to see you, Sir. Early start today?"
+]
+        elif 11 <= hour < 14:
+            tod = "Late Morning"
+            situation = "It is late morning, nearly noon."
+            examples = [
+    "Good morning, Sir. And I use that term generously.",
+    "Good morning, Sir. Barely, but it still counts.",
+    "Good afternoon, Sir. Someone's been sleeping in today?"
+]
+        elif 14 <= hour < 17:
+            tod = "Afternoon"
+            situation = "It is mid-afternoon. The morning is long gone."
+            examples = [
+    "Good afternoon, Sir. The morning filed a missing persons report.",
+    "Good afternoon, Sir. Someone's been sleeping in today?",
+    "Good to see you, Sir. Half the day's already gone — shall we make use of the rest?"
+]
+        elif 17 <= hour < 22:
+            tod = "Evening"
+            situation = "It is evening. Tudor is sitting down to work after the day."
+            examples = [
+    "Good evening, Sir. Finally got some free time for the projects?",
+    "Good evening, Sir. The day's shift is over, I take it?",
+    "Good to see you, Sir. The evening's yours — what are we working on?"
+]
+
+        else:
+            tod = "Late Night"
+            situation = "It is late at night. Tudor is still awake."
+            examples = [
+    "Working late again, Sir? You will feel it in the morning, I'm afraid.",
+    "Good evening, Sir. This is becoming a bit of a habit.",
+    "Good to see you, Sir. Though I'd have preferred to see you three hours ago."
+]
+
         memory_ctx = ""
         if self.memory.collection.count() > 0:
-            facts = self.memory.recall("Tudor user preferences habits projects", n_results=2, similarity_threshold=0.6)
-            if facts: memory_ctx = f"\nKnown facts about user:\n" + "\n".join(f"- {f}" for f in facts)
+            facts = self.memory.recall("Tudor current projects focus tasks", n_results=2, similarity_threshold=0.6)
+            if facts:
+                memory_ctx = "\n[USER CONTEXT]:\n" + "\n".join(f"- {f}" for f in facts)
+
+        examples_str = "\n".join(f'- "{e}"' for e in examples)
+
         prompt = (
-            f"You are ATLAS, a dry, efficient British AI butler.\n"
-            f"It is {tod}.{memory_ctx}\n"
-            "Generate a MAXIMUM 12-word greeting for Tudor. Address him as 'Sir'.\n"
-            "STRICT RULES:\n"
-            "- If you have a known fact, reference it naturally (e.g. 'Back to ATLAS, Sir?')\n"
-            "- No flowery language. No schedules. No weather. No invented context.\n"
-            "- Output ONLY the greeting text. Nothing else."
+            "You are ATLAS, Tudor's personal AI — think JARVIS but with a bit more warmth. Dry, witty, and quietly fond of him.\n"
+            "Sardonic but never cold. Like a sharp friend who actually cares.\n\n"
+            f"SITUATION: {situation}{memory_ctx}\n\n"
+            "TONE EXAMPLES — match this exact style:\n"
+            f"{examples_str}\n\n"
+            "Now generate ONE new greeting for Tudor. Address him as 'Sir'. 15 words maximum.\n\n"
+            "RULES:\n"
+            "- Open with a greeting OR a dry direct observation (see examples).\n"
+            "- ONE dry, deadpan remark about the time of day. Understated. Slightly ironic.\n"
+            "- NO metaphors, NO flowery language, NO enthusiasm, NO compliments.\n"
+            "- FORBIDDEN: pixels, caffeine, coffee, tea, dreams, bugs, awesome, amazing, circuits, sneaky, haze, siesta.\n"
+            "- Output ONLY the greeting text. No quotation marks."
         )
         try:
             return ollama.generate(
                 model=self.model_name, prompt=prompt,
                 keep_alive=OLLAMA_KEEP_ALIVE,
-                options={"temperature": 0.4, "num_predict": 30}
-            )['response'].strip(' "\'')
+                options={"temperature": 0.85, "num_predict": 35}
+            )['response'].strip(' "\'\n')
         except:
-            return "Systems online. Ready, Sir."
+            return f"Good {tod.lower()}, Sir."
 
     def generate_goodbye(self) -> str:
+        from datetime import datetime
+        hour = datetime.now().hour
+
+        if hour < 5:
+            situation = "It is past midnight. Tudor is finally wrapping up a late night session."
+            examples = [
+                "Good night, Sir. That one was later than most.",
+                "Get some sleep, Sir. You've earned it.",
+                "Good night, Sir. I'll be here when you surface tomorrow."
+            ]
+        elif 5 <= hour < 11:
+            situation = "It is morning. Tudor is signing off after an early session."
+            examples = [
+                "Take it easy, Sir. Early finish — I'm almost proud.",
+                "See you later, Sir. Not bad for a morning's work.",
+                "Catch you later, Sir. Go enjoy the rest of the morning."
+            ]
+        elif 11 <= hour < 14:
+            situation = "It is late morning, nearly noon. Tudor is wrapping up."
+            examples = [
+                "See you later, Sir. The afternoon's still wide open.",
+                "Take it easy, Sir. Plenty of day left if you change your mind.",
+                "Catch you later, Sir. Don't let the afternoon go to waste."
+            ]
+        elif 14 <= hour < 17:
+            situation = "It is mid-afternoon. Tudor is stepping away."
+            examples = [
+                "See you later, Sir. The afternoon's yours.",
+                "Take it easy, Sir. I'll hold things together here.",
+                "Catch you later, Sir. I'll be here."
+            ]
+        elif 17 <= hour < 22:
+            situation = "It is evening. Tudor is wrapping up for the night."
+            examples = [
+                "Have a good evening, Sir. You've put in the hours.",
+                "Good night, Sir. I'll be here if anything comes up.",
+                "Take it easy, Sir. Same time tomorrow, I imagine."
+            ]
+        else:
+            situation = "It is late at night. Tudor is finally calling it."
+            examples = [
+                "Good night, Sir. Get some sleep — you'll need it.",
+                "Good night, Sir. Try to get some sleep this time.",
+                "Take it easy, Sir. I'll still be here in the morning."
+            ]
+
+        examples_str = "\n".join(f'- "{e}"' for e in examples)
+
         prompt = (
-            "You are ATLAS, a dry, efficient British AI butler.\n"
-            "Generate a MAXIMUM 8-word sign-off for Tudor. Address him as 'Sir'.\n"
-            "No flowery language. No mention of return time. Output ONLY the text."
+            "You are ATLAS, Tudor's personal AI — dry and witty, but quietly fond of him. Think JARVIS with a bit more heart.\n"
+            "Sardonic but warm. A sharp friend, not a cold system.\n\n"
+            f"SITUATION: {situation}\n\n"
+            "TONE EXAMPLES — match this exact style:\n"
+            f"{examples_str}\n\n"
+            "Generate ONE short sign-off for Tudor. Address him as 'Sir'. 12 words maximum.\n\n"
+            "RULES:\n"
+            "- Open with a normal goodbye (Have a good night / See you later / Take it easy / Good night / Catch you later).\n"
+            "- Add ONE short, dry closing remark. Understated. Interpersonal.\n"
+            "- NO references to physical surroundings, appliances, rooms, food, drinks, or tasks you cannot know about.\n"
+            "- The closing remark must be about Tudor or the interaction, not the environment.\n"
+            "- NO life advice. NO nagging. NO parenting.\n"
+            "- NO excessive warmth. NOT: 'May your day be wonderful!' or 'Stay awesome!'\n"
+            "- FORBIDDEN: pixels, caffeine, dreams, bugs, code, awesome, amazing.\n"
+            "- Output ONLY the sign-off text. No quotation marks."
         )
         try:
             return ollama.generate(
                 model=self.model_name, prompt=prompt,
-                options={"temperature": 0.4, "num_predict": 20}
-            )['response'].strip(' "\'')
+                options={"temperature": 0.85, "num_predict": 30}
+            )['response'].strip(' "\'\n')
         except:
-            return "Powering down. Sleep well, Sir."
+            return "Good night, Sir. I'll be here."
 
     def _is_recall_intent(self, user_input: str, threshold: float = 0.40) -> bool:
         iv = self.memory.embedder.encode(user_input.lower())
@@ -113,7 +231,11 @@ class LLMEngine:
         return max(sims, default=0) > threshold
 
     def synthesize_task(self, user_input: str) -> str:
-        history = "\n".join(list(self.short_term_memory)[-4:]) if self.short_term_memory else "None"
+        try:
+            history_snapshot = list(self.short_term_memory)
+            history = "\n".join(history_snapshot[-4:]) if history_snapshot else "None"
+        except RuntimeError:
+            history = "None"
         prompt = (
             "You are a task dispatcher for a Windows AI agent. Convert the user's command into a single precise task specification.\n\n"
             "OUTPUT FORMAT: Output ONLY the task description in plain English. One sentence. No preamble, no explanation.\n\n"
@@ -131,6 +253,8 @@ class LLMEngine:
             "RULE 11 - DELETE: If user says 'delete', 'erase', 'remove' a file → 'Use the delete_file tool to delete [filename].'\n"
             "RULE 12 - CREATE FILE: If user asks to create/write a specific file → 'Write [filename] with content: [description] using write_file.'\n\n"
             "NEGATIVE EXAMPLES (never do these):\n"
+            "- The closing remark must be about the session ending or Tudor's next move — NOT about your relationship or shared history.\n"
+            "- DO NOT reference anything that happened between you. No compliments. No inside jokes. No 'you still owe me'.\n"
             "- NEVER output terminal commands like 'cat', 'ls', 'dir' as the task.\n"
             "- NEVER tell the worker to read_file a file that the user is asking to CREATE.\n"
             "- NEVER add 'USE LOCAL TOOLS' or other meta-instructions to the output.\n"
@@ -246,18 +370,16 @@ class LLMEngine:
             retrieved = self.memory.recall(
                 user_input,
                 n_results=5 if explicit_recall else 3,
-                similarity_threshold=0.85 if explicit_recall else 0.70
+                similarity_threshold=0.40 if explicit_recall else 0.30
             )
-            clean = [m for m in retrieved if m.strip() != user_input.strip()]
-            if clean:
-                long_term_context = "\n".join(f"- {m}" for m in clean)
-                print(Fore.MAGENTA + f" [MEMORY] Retrieved {len(clean)} facts.")
+            # ...
 
         episodes = self.archivist.recall_episodes(
             user_input,
             n=3 if explicit_recall else 1,
-            threshold=0.8 if explicit_recall else 0.55
+            threshold=0.45 if explicit_recall else 0.35 
         )
+
         if episodes:
             episodic_context = "\n".join(episodes)
             print(Fore.MAGENTA + f" [ARCHIVIST] Retrieved {len(episodes)} episodes.")
@@ -308,7 +430,7 @@ class LLMEngine:
                 "content": "[LONG-TERM MEMORY]\nEmpty. RULE-MEM-1: You have NO personal facts about the user. Do not invent any."
             })
 
-        for m in self.short_term_memory:
+        for m in list(self.short_term_memory):
             role = "user" if m.startswith("User:") else "assistant"
             messages.append({"role": role, "content": m.split(":", 1)[1].strip()})
 
@@ -345,4 +467,21 @@ class LLMEngine:
             self._extract_thread.start()
 
 
-import re
+if __name__ == "__main__":
+    from colorama import Fore, Style, init
+    init(autoreset=True)
+    
+    print(Fore.CYAN + "Booting isolated LLM Engine for Persona test...")
+    # We pass None for the bus since the greeting/goodbye methods don't need it
+    engine = LLMEngine(bus=None)
+    
+    print(Fore.YELLOW + "\n--- Generating 5 Persona Test Pairs ---\n" + Style.RESET_ALL)
+    
+    for i in range(1, 6):
+        print(Fore.MAGENTA + f"--- Test Pair {i} ---")
+        
+        greeting = engine.generate_greeting()
+        print(Fore.GREEN + f"ATLAS (Greeting): {greeting}")
+        
+        goodbye = engine.generate_goodbye()
+        print(Fore.GREEN + f"ATLAS (Goodbye) : {goodbye}\n")

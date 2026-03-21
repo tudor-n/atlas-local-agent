@@ -65,11 +65,18 @@ class Archivist:
         print(Fore.GREEN + f" [ARCHIVIST] Session archived: {summary[:60]}...")
         return True
 
-    def recall_episodes(self, query: str, n: int = 3, threshold: float = 0.8) -> list:
+    def recall_episodes(self, query: str, n: int = 3, threshold: float = 0.40) -> list: 
         if self.episodes.count() == 0: return []
+        
         results = self.episodes.query(
             query_embeddings=[self.embedder.encode(query).tolist()],
             n_results=min(n, self.episodes.count()),
             include=["documents", "distances"]
         )
-        return [doc for doc, dist in zip(results['documents'][0], results['distances'][0]) if dist < threshold]
+        
+        valid_episodes = []
+        for doc, dist in zip(results['documents'][0], results['distances'][0]):
+            if dist < threshold:
+                valid_episodes.append(doc)
+                
+        return valid_episodes

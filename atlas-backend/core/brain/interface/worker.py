@@ -4,6 +4,8 @@ from colorama import Fore
 from core.brain.interface.tools import ToolRegistry
 from config import WORKER_MODEL, WORKER_MAX_STEPS, OLLAMA_KEEP_ALIVE
 
+
+
 class WorkerNode:
     def __init__(self, model_name=WORKER_MODEL):
         self.model_name = model_name
@@ -63,13 +65,15 @@ class WorkerNode:
                 xml_call = self._strip_markdown(response['message']['content'])
                 print(Fore.CYAN + f" [WORKER ACTION]: {xml_call[:150]}")
 
-                tool_match = re.search(r'<tool>(.*?)</tool>', xml_call, re.IGNORECASE)
-                if not tool_match:
+                extracted = extract_tool_call(xml_call)
+                action = extracted.get("tool")
+
+                if not action:
                     messages.append({"role": "assistant", "content": xml_call})
                     messages.append({"role": "user", "content": "[SYSTEM] No <tool> tag found. You must output XML only. Example:\n<tool>write_file</tool>\n<filepath>hello.py</filepath>\n<content>print('hello')</content>"})
                     continue
 
-                action = tool_match.group(1).strip().lower()
+                action = action.strip().lower()
 
                 if action == "finish":
                     last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
@@ -77,15 +81,23 @@ class WorkerNode:
                         messages.append({"role": "assistant", "content": xml_call})
                         messages.append({"role": "user", "content": "[SYSTEM] Cannot finish after an unresolved [ERROR]. Fix the error first."})
                         continue
-                    final_msg = "Task complete."
-                    msg_match = re.search(r'<message>(.*?)</message>', xml_call, re.IGNORECASE | re.DOTALL)
-                    if msg_match:
-                        final_msg = msg_match.group(1).strip()
+                    
+                    final_msg = extracted["parameters"].get("message", "Task complete.")
+                    
                     log_str = " -> ".join(execution_log)
                     result = f"[SUCCESS] {final_msg} (Steps: {log_str})"
                     if raw_data_memory:
                         result += f"\n\n[RAW DATA]:\n" + "\n\n".join(raw_data_memory)
                     return result
+
+                if action == "write_file":
+                    raw_content = extracted["parameters"].get("content")
+                    if raw_content:
+                        cleaned_content = re.sub(r'^//\s*---\s*FILENAME:.*?---\s*\n?', '', raw_content, flags=re.MULTILINE).strip()
+                        if cleaned_content != raw_content.strip():
+                            xml_call = xml_call.replace(raw_content, f"\n{cleaned_content}\n")
+
+                result = self.tools.execute_tool(xml_call)
 
                 if action == "write_file":
                     content_match = re.search(r'<content>(.*?)</content>', xml_call, re.IGNORECASE | re.DOTALL)
@@ -148,3 +160,28 @@ class WorkerNode:
             ollama.generate(model=self.model_name, prompt=".", keep_alive=OLLAMA_KEEP_ALIVE, options={"num_predict": 1})
         except Exception as e:
             print(Fore.RED + f" [WORKER] Warmup failed: {e}")
+def extract_tool_call(llm_output: str) -> dict:
+    """
+    A robust, forgiving extractor for LLM XML tool calls.
+    Handles capitalization, hallucinated attributes, and line breaks.
+    """
+    result = {"tool": None, "parameters": {}}
+    
+    tool_match = re.search(r'<tool\b[^>]*>(.*?)</tool>', llm_output, re.IGNORECASE | re.DOTALL)
+    
+    if tool_match:
+        attr_match = re.search(r'<tool\b[^>]*name=["\']([^"\']+)["\']', llm_output, re.IGNORECASE)
+        if attr_match:
+            result["tool"] = attr_match.group(1).strip()
+        else:
+            result["tool"] = tool_match.group(1).strip()
+            
+    param_matches = re.finditer(r'<([a-zA-Z0-9_]+)\b[^>]*>(.*?)</\1>', llm_output, re.IGNORECASE | re.DOTALL)
+    for match in param_matches:
+        tag_name = match.group(1).lower()
+        tag_content = match.group(2).strip()
+        
+        if tag_name != 'tool':
+            result["parameters"][tag_name] = tag_content
+
+    return result

@@ -80,6 +80,7 @@ executive  = Executive(bus)
 motor      = MotorCortex()
 worker     = WorkerNode()
 worker.warmup()
+_main_loop = None
 
 # Voice I/O (CUDA → CPU fallback handled inside each class)
 mouth = Mouth(device="cuda")
@@ -101,10 +102,33 @@ async def broadcast_event(event_type: str, data: dict):
     for d in dead:
         connected_clients.remove(d)
 
+@app.on_event("startup")
+async def startup_event():
+    global _main_loop
+    _main_loop = asyncio.get_running_loop() # Capture the loop on startup
+    
+    asyncio.create_task(system_vitals_broadcaster())
+    greeting = brain.generate_greeting()
+    print(f"[ATLAS CORE]: {greeting}")
+    _main_loop.call_later(
+        1.0, lambda: asyncio.create_task(
+            broadcast_event("atlas_speak", {"text": greeting, "mode": "greeting"})
+        )
+    )
+
 
 def emit(event_type: str, data: dict):
     """Thread-safe fire-and-forget wrapper around broadcast_event."""
-    asyncio.run(broadcast_event(event_type, data))
+    global _main_loop
+    if _main_loop and _main_loop.is_running():
+        # Safely schedule the async broadcast from any background thread
+        asyncio.run_coroutine_threadsafe(broadcast_event(event_type, data), _main_loop)
+    else:
+        # Fallback if the loop isn't ready
+        try:
+            asyncio.run(broadcast_event(event_type, data))
+        except RuntimeError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -334,18 +358,6 @@ async def system_vitals_broadcaster():
 # ---------------------------------------------------------------------------
 # FastAPI Lifecycle & WebSocket Endpoint
 # ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(system_vitals_broadcaster())
-    greeting = brain.generate_greeting()
-    print(f"[ATLAS CORE]: {greeting}")
-    # Broadcast greeting once first client connects (queued via asyncio)
-    asyncio.get_event_loop().call_later(
-        1.0, lambda: asyncio.create_task(
-            broadcast_event("atlas_speak", {"text": greeting, "mode": "greeting"})
-        )
-    )
 
 
 @app.on_event("shutdown")

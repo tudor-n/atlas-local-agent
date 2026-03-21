@@ -2,7 +2,37 @@ import os
 import re
 import subprocess
 from colorama import Fore
-from config import SANDBOX_PATH, ARCHITECT_LOCAL_MODEL, BASH_TIMEOUT, OLLAMA_KEEP_ALIVE
+import docker
+from config import SANDBOX_PATH, ARCHITECT_LOCAL_MODEL, BASH_TIMEOUT, OLLAMA_KEEP_ALIVE, DOCKER_IMAGE, CONTAINER_NAME
+
+try:
+    docker_client = docker.from_env()
+except docker.errors.DockerException:
+    print(Fore.RED + " [SYSTEM] WARNING: Docker is not running. Sandbox is offline.")
+    docker_client = None
+
+def get_or_create_sandbox():
+    """Ensures the worker container is running and the shared volume exists."""
+    if not docker_client: return None
+    
+    os.makedirs(SANDBOX_PATH, exist_ok=True)
+    
+    try:
+        container = docker_client.containers.get(CONTAINER_NAME)
+        if container.status != 'running':
+            container.start()
+        return container
+    except docker.errors.NotFound:
+        print(Fore.MAGENTA + f" [SANDBOX] Booting new secure container ({DOCKER_IMAGE})...")
+        return docker_client.containers.run(
+            DOCKER_IMAGE,
+            command="tail -f /dev/null",
+            name=CONTAINER_NAME,
+            volumes={SANDBOX_PATH: {'bind': '/workspace', 'mode': 'rw'}}, 
+            working_dir='/workspace',
+            detach=True,
+            network_mode="bridge" 
+        )
 
 class ToolRegistry:
     def __init__(self, sandbox_path=SANDBOX_PATH):
@@ -196,22 +226,28 @@ INSTRUCTIONS: Output ONLY ONE XML tool block at a time. No markdown. No commenta
             return f"[ERROR] Delete failed: {e}"
 
     def _execute_bash(self, command: str) -> str:
-        forbidden = [r'\bdel\b', r'\brm\b', r'\brmdir\b', r'\bdiskpart\b', r'\bmkfs\b', r'\bformat\s+[a-zA-Z]:']
-        for pat in forbidden:
-            if re.search(pat, command.lower()):
-                return f"[ERROR] SECURITY BLOCK: Forbidden command pattern '{pat}'."
-        print(Fore.RED + f" [TERMINAL] {command}")
+        """Executes a terminal command safely inside the Docker sandbox."""
+        print(Fore.YELLOW + f" [SANDBOX EXEC]: {command}")
+        
+        container = get_or_create_sandbox()
+        if not container:
+            return "[ERROR] Docker sandbox is unavailable. Please start Docker Desktop."
+            
         try:
-            result = subprocess.run(command, shell=True, cwd=self.sandbox_path, capture_output=True, text=True, timeout=BASH_TIMEOUT)
-            out = result.stdout.strip()
-            err = result.stderr.strip()
-            if result.returncode == 0:
-                return f"[SUCCESS] Output:\n{out[:1500]}" if out else "[SUCCESS] No output."
-            return f"[ERROR] Code {result.returncode}:\n{err}\n{out}"
-        except subprocess.TimeoutExpired:
-            return f"[ERROR] Timed out after {BASH_TIMEOUT}s."
+            exit_code, output = container.exec_run(
+                ["/bin/sh", "-c", command], 
+                workdir="/workspace"
+            )
+            
+            result_str = output.decode('utf-8', errors='replace').strip()
+            
+            if exit_code != 0:
+                return f"[ERROR] Command failed with exit code {exit_code}.\nOutput:\n{result_str}"
+                
+            return result_str if result_str else "[SUCCESS] Command executed silently."
+            
         except Exception as e:
-            return f"[ERROR] {e}"
+            return f"[CRITICAL ERROR] Sandbox execution failed: {str(e)}"
 
     def _ask_local_architect(self, prompt: str) -> str:
         import ollama

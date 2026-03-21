@@ -1,6 +1,8 @@
 import os
 
 SANDBOX_PATH = "D:\\atlas_sandbox"
+DOCKER_IMAGE = "python:3.10-slim"
+CONTAINER_NAME = "atlas-worker-sandbox"
 MEMORY_DB_PATH = "./atlas_memory"
 
 WORKER_MODEL = "qwen2.5-coder:3b"
